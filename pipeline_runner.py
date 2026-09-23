@@ -13,10 +13,7 @@ SCRIPTS_DIR = _HERE / "scripts" if (_HERE / "scripts").exists() else _HERE
 
 
 def _run(cmd: list, log_lines: list):
-    """รันคำสั่งและเก็บ log"""
-    result = subprocess.run(
-        cmd, capture_output=True, text=True
-    )
+    result = subprocess.run(cmd, capture_output=True, text=True)
     stdout = result.stdout.strip()
     stderr = result.stderr.strip()
     if stdout:
@@ -24,9 +21,7 @@ def _run(cmd: list, log_lines: list):
     if stderr:
         log_lines.append(f"[WARN] {stderr}")
     if result.returncode != 0:
-        raise RuntimeError(
-            f"Script ล้มเหลว: {' '.join(cmd)}\n{stderr}"
-        )
+        raise RuntimeError(f"Script ล้มเหลว: {' '.join(cmd)}\n{stderr}")
 
 
 def run_pipeline(
@@ -37,10 +32,6 @@ def run_pipeline(
     year: int,
     progress_cb=None,
 ) -> tuple[str, list[str]]:
-    """
-    รัน ERP pipeline ทั้งหมด
-    คืนค่า (output_path, log_lines)
-    """
     log = []
     tmp = tempfile.mkdtemp(prefix="erp_")
     python = sys.executable
@@ -57,7 +48,6 @@ def run_pipeline(
              [python, str(SCRIPTS_DIR / "decrypt_erp.py"),
               erp_path, decrypted, password], log)
 
-        # ตรวจรูปแบบไฟล์
         import openpyxl
         wb = openpyxl.load_workbook(decrypted, read_only=True)
         ws2 = wb["2"] if "2" in wb.sheetnames else None
@@ -65,7 +55,6 @@ def run_pipeline(
         if ws2:
             first_cell = ws2.cell(1, 1).value
             is_new_format = first_cell is not None and str(first_cell).strip() == ""
-            # ตรวจอีกแบบ: แถวที่ 1 มีหลายคอลัมน์ว่าง = format ใหม่
             row1_vals = [ws2.cell(1, c).value for c in range(1, 6)]
             if all(v is None for v in row1_vals):
                 is_new_format = True
@@ -93,7 +82,6 @@ def run_pipeline(
               current, with_t], log)
         current = with_t
 
-        # ถ้าไม่มี PPS ภายนอก ให้ build จาก ERP
         import openpyxl as ox
         wb2 = ox.load_workbook(current, read_only=True)
         has_pps = any(s.lower() == "pps" for s in wb2.sheetnames)
@@ -105,7 +93,6 @@ def run_pipeline(
             step("สร้างชีท pps05 จาก ERP...", _run,
                  [python, str(SCRIPTS_DIR / "build_pps_from_erp.py"),
                   current, base_pps], log)
-            # ลบชีท PPS ดิบออก
             wb3 = ox.load_workbook(base_pps)
             if "PPS" in wb3.sheetnames:
                 del wb3["PPS"]
@@ -130,12 +117,19 @@ def run_pipeline(
              [python, str(SCRIPTS_DIR / "build_sum.py"),
               tmp_sum, output_path, "sum (ตัดO2O)"], log)
 
-        # Recalculate ด้วย LibreOffice (ถ้ามี)
         import shutil as _shutil
         if _shutil.which("soffice"):
+            lo_dir = os.path.join(tmp, "lo_out")
+            os.makedirs(lo_dir, exist_ok=True)
             step("Recalculate สูตรด้วย LibreOffice...", _run,
                  ["soffice", "--headless", "--convert-to", "xlsx",
-                  "--outdir", tmp, output_path], log)
+                  "--outdir", lo_dir, output_path], log)
+            lo_file = os.path.join(lo_dir, os.path.basename(output_path))
+            if os.path.exists(lo_file) and os.path.getsize(lo_file) > 0:
+                _shutil.move(lo_file, output_path)
+                log.append(f"[INFO] LibreOffice recalc สำเร็จ ({os.path.getsize(output_path):,} bytes)")
+            else:
+                log.append("[WARN] LibreOffice ไม่ได้สร้างไฟล์ output — ใช้ไฟล์เดิม")
         else:
             log.append("[INFO] ข้าม LibreOffice recalc (ไม่มีในระบบ)")
 
