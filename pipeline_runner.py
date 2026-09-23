@@ -8,7 +8,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
-SCRIPTS_DIR = Path(__file__).parent / "scripts"
+_HERE = Path(__file__).parent
+SCRIPTS_DIR = _HERE / "scripts" if (_HERE / "scripts").exists() else _HERE
 
 
 def _run(cmd: list, log_lines: list):
