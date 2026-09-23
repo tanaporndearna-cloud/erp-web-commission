@@ -65,7 +65,6 @@ if erp_file is None:
 
 # ===== Processing =====
 if run_btn and erp_file is not None:
-    # บันทึกไฟล์ upload ลง temp
     with tempfile.TemporaryDirectory() as tmp_upload:
         erp_path = os.path.join(tmp_upload, erp_file.name)
         with open(erp_path, "wb") as f:
@@ -77,7 +76,6 @@ if run_btn and erp_file is not None:
             with open(pps_path, "wb") as f:
                 f.write(pps_file.getvalue())
 
-        # --- Step 1: Run Pipeline ---
         st.subheader("⚙️ คิดค่าคอม...")
         status_box = st.empty()
         log_box = st.expander("แสดง Log", expanded=False)
@@ -103,33 +101,37 @@ if run_btn and erp_file is not None:
 
             status_box.success("✅ คิดค่าคอมเสร็จแล้วค่ะ!")
 
-            # --- Step 2: Read Result ---
             from google_writer import read_sum_sheet
             rows, dates, branch_totals = read_sum_sheet(output_path)
             st.success(f"อ่านข้อมูลได้ {len(rows)} แถว, {len(branch_totals)} สาขา")
 
-            # แสดง Preview
-            with st.expander("👀 Preview ข้อมูล (5 แถวแรก)"):
+            with st.expander("🔍 Debug: ค่าจริงใน xlsx (ก่อนเขียน Google Sheet)"):
                 import pandas as pd
+                st.write("**วันที่ (5 วันแรก):**", dates[:5])
                 preview = []
-                for r in rows[:5]:
+                for r in rows:
+                    daily_sum = sum(v for v in r["daily"] if v)
                     preview.append({
                         "สาขา": r["branch"],
                         "ชื่อ": r["name"],
-                        "คอมรายคน": r["com_pp"],
-                        "คอมรวม": r["com_tot"],
-                        "ยอดขาย": r["sales"],
-                        "% Com": f"{r['pct_com']*100:.2f}%"
+                        "daily_sum": daily_sum,
+                        "com_pp": r["com_pp"],
+                        "com_tot": r["com_tot"],
+                        "sales": r["sales"],
+                        "is_total": r["is_total"],
                     })
-                st.dataframe(pd.DataFrame(preview), use_container_width=True)
+                df_preview = pd.DataFrame(preview)
+                st.dataframe(df_preview, use_container_width=True)
+                non_zero = df_preview[df_preview["com_pp"] > 0]
+                if len(non_zero) == 0:
+                    st.error("⚠️ ทุกแถวมีค่า com_pp = 0 — ปัญหาอยู่ที่การคำนวณใน xlsx (LibreOffice / SUMIFS)")
+                else:
+                    st.success(f"✅ มีค่า > 0 จำนวน {len(non_zero)} แถว")
 
-            # --- Step 3: Write to Google Sheet ---
             if write_to_sheet:
                 st.subheader("📤 เขียนลง Google Sheet...")
-
                 try:
                     from google_writer import write_com_erp, write_summarize_com
-
                     prog = st.progress(0, "กำลังเขียนชีท Com ERP...")
 
                     def erp_progress(current, total):
@@ -149,7 +151,6 @@ if run_btn and erp_file is not None:
                     st.error(f"เขียน Google Sheet ไม่สำเร็จ: {e}")
                     st.warning("กรุณาตรวจสอบ Service Account credentials ใน secrets.toml")
 
-            # --- Step 4: Download ---
             st.subheader("⬇️ ดาวน์โหลดไฟล์ผลลัพธ์")
             with open(output_path, "rb") as f:
                 output_bytes = f.read()
@@ -166,6 +167,34 @@ if run_btn and erp_file is not None:
         except Exception as e:
             status_box.error(f"❌ เกิดข้อผิดพลาด: {e}")
             st.exception(e)
+
+# ===== Clear + Copy from sum(ตัดO2O) =====
+st.divider()
+st.subheader("🗑️ ล้าง Com ERP และคัดลอกจาก sum(ตัดO2O)")
+st.caption("ล้างข้อมูลใน Com ERP แล้วคัดลอกข้อมูลจากชีท sum(ตัดO2O) ใน Google Sheet มาวางเป็นค่า (ไม่มีสูตร)")
+
+clear_btn = st.button(
+    "🗑️ ล้าง + คัดลอกจาก sum(ตัดO2O)",
+    type="secondary",
+    use_container_width=True,
+)
+
+if clear_btn:
+    try:
+        from google_writer import clear_and_copy_from_sum_o2o
+        status_clear = st.empty()
+
+        def clear_progress(msg):
+            status_clear.info(f"⏳ {msg}")
+
+        with st.spinner("กำลังดำเนินการ..."):
+            result = clear_and_copy_from_sum_o2o(progress_cb=clear_progress)
+
+        status_clear.success(result)
+
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาด: {e}")
+        st.exception(e)
 
 # ===== Footer =====
 st.divider()
