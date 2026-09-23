@@ -151,6 +151,20 @@ def write_summarize_com(branch_totals: dict, date_start_day: int = 20) -> str:
         written += 1
 
     ws.batch_update(batch_data)
+
+    # ตั้ง number format #,##0.00 ให้ทุก cell ที่เขียน
+    fmt_ranges = []
+    for branch, vals in branch_totals.items():
+        if branch not in trc_row_map:
+            continue
+        row = trc_row_map[branch]
+        start_cell = gspread.utils.rowcol_to_a1(row, date_col_start)
+        end_cell = gspread.utils.rowcol_to_a1(row, date_col_start + min(len(vals), 32) - 1)
+        fmt_ranges.append(f"{start_cell}:{end_cell}")
+
+    for fmt_range in fmt_ranges:
+        ws.format(fmt_range, {"numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}})
+
     return f"✅ เขียน สรุปCom สำเร็จ {written}/{len(trc_row_map)} สาขา"
 
 
