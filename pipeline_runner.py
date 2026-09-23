@@ -130,10 +130,14 @@ def run_pipeline(
              [python, str(SCRIPTS_DIR / "build_sum.py"),
               tmp_sum, output_path, "sum (ตัดO2O)"], log)
 
-        # Recalculate ด้วย LibreOffice
-        step("Recalculate สูตรด้วย LibreOffice...", _run,
-             ["soffice", "--headless", "--convert-to", "xlsx",
-              "--outdir", tmp, output_path], log)
+        # Recalculate ด้วย LibreOffice (ถ้ามี)
+        import shutil as _shutil
+        if _shutil.which("soffice"):
+            step("Recalculate สูตรด้วย LibreOffice...", _run,
+                 ["soffice", "--headless", "--convert-to", "xlsx",
+                  "--outdir", tmp, output_path], log)
+        else:
+            log.append("[INFO] ข้าม LibreOffice recalc (ไม่มีในระบบ)")
 
         log.append(f"✅ เสร็จสิ้น: {output_name}")
         return output_path, log
