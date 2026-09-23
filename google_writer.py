@@ -17,25 +17,18 @@ SCOPES = [
 
 
 def get_client():
-    """สร้าง gspread client จาก Service Account ใน secrets"""
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     return gspread.authorize(creds)
 
 
 def write_com_erp(rows: list, dates: list, progress_cb=None) -> str:
-    """
-    เขียนข้อมูลลงชีท Com ERP
-    rows: list of dict {branch, name, daily:[32], com_pp, com_tot, sales, pct_com}
-    dates: list of 32 strings เช่น ["20/07/69", ...]
-    """
     gc = get_client()
     sh = gc.open_by_key(SHEET_ID)
     ws = sh.worksheet(SHEET_COM_ERP)
 
     all_values = ws.get_all_values()
 
-    # หา header row (col A = "สาขา")
     header_row_idx = None
     for i, row in enumerate(all_values):
         if row and row[0] == "สาขา":
@@ -45,12 +38,11 @@ def write_com_erp(rows: list, dates: list, progress_cb=None) -> str:
     if header_row_idx is None:
         raise ValueError("หา header row (สาขา) ใน Com ERP ไม่เจอ")
 
-    header_row = header_row_idx + 1  # 1-indexed
+    header_row = header_row_idx + 1
     data_start_row = header_row + 1
-    date_start_col = 3   # col C
-    summary_start = 36   # col AJ
+    date_start_col = 3
+    summary_start = 36
 
-    # เขียนวันที่ใน header
     date_updates = []
     for i, d in enumerate(dates):
         date_updates.append({
@@ -59,24 +51,20 @@ def write_com_erp(rows: list, dates: list, progress_cb=None) -> str:
         })
     ws.batch_update(date_updates)
 
-    # เขียนข้อมูลทีละแถว (batch)
     batch_data = []
     for ri, d in enumerate(rows):
         row = data_start_row + ri
         row_vals = [d["branch"], d["name"]]
-        # daily 32 วัน
         for di in range(32):
             val = d["daily"][di] if d["daily"] and di < len(d["daily"]) else 0
             row_vals.append(round(float(val or 0), 2))
-        # col AJ (idx 34) = empty, then summary at 36
         while len(row_vals) < 34:
             row_vals.append("")
-        row_vals.append("")  # col AI = empty
-        row_vals.append(round(float(d.get("com_pp") or 0), 2))  # AJ
-        row_vals.append(round(float(d.get("com_tot") or 0), 2))  # AK
-        row_vals.append(round(float(d.get("sales") or 0), 2))    # AL
-        # % Com — ส่งเป็น fraction แล้วตั้ง format ทีหลัง
-        row_vals.append(round(float(d.get("pct_com") or 0), 6))  # AM
+        row_vals.append("")
+        row_vals.append(round(float(d.get("com_pp") or 0), 2))
+        row_vals.append(round(float(d.get("com_tot") or 0), 2))
+        row_vals.append(round(float(d.get("sales") or 0), 2))
+        row_vals.append(round(float(d.get("pct_com") or 0), 6))
 
         batch_data.append({
             "range": f"A{row}:{gspread.utils.rowcol_to_a1(row, len(row_vals))}",
@@ -88,7 +76,6 @@ def write_com_erp(rows: list, dates: list, progress_cb=None) -> str:
 
     ws.batch_update(batch_data)
 
-    # ตั้ง number format % Com
     pct_range = f"{gspread.utils.rowcol_to_a1(data_start_row, summary_start + 3)}:{gspread.utils.rowcol_to_a1(data_start_row + len(rows) - 1, summary_start + 3)}"
     ws.format(pct_range, {"numberFormat": {"type": "PERCENT", "pattern": "0.00%"}})
 
@@ -96,17 +83,12 @@ def write_com_erp(rows: list, dates: list, progress_cb=None) -> str:
 
 
 def write_summarize_com(branch_totals: dict, date_start_day: int = 20) -> str:
-    """
-    เขียนข้อมูลลงชีท สรุปCom
-    branch_totals: {"T2": [v1..v32], "T3": [...], ...}
-    """
     gc = get_client()
     sh = gc.open_by_key(SHEET_ID)
     ws = sh.worksheet(SHEET_SUMMARIZE)
 
     all_values = ws.get_all_values()
 
-    # หา date header row (col E = date_start_day หรือ 1)
     date_header_row_idx = None
     for i, row in enumerate(all_values):
         if len(row) >= 5:
@@ -121,16 +103,15 @@ def write_summarize_com(branch_totals: dict, date_start_day: int = 20) -> str:
     if date_header_row_idx is None:
         raise ValueError(f"หา date header row ใน สรุปCom ไม่เจอ (col E = {date_start_day})")
 
-    date_header_row = date_header_row_idx + 1  # 1-indexed
-    date_col_start = 5  # col E
+    date_header_row = date_header_row_idx + 1
+    date_col_start = 5
 
-    # หา Commission TRC rows
-    trc_row_map = {}  # {"T2": row_idx_1based, ...}
+    trc_row_map = {}
     for i in range(date_header_row_idx + 1, len(all_values)):
         row = all_values[i]
         if len(row) >= 3 and row[1] == "Commission" and str(row[2]).startswith("TRC "):
             num = str(row[2]).replace("TRC ", "").strip()
-            trc_row_map[f"T{num}"] = i + 1  # 1-indexed
+            trc_row_map[f"T{num}"] = i + 1
 
     if not trc_row_map:
         raise ValueError("หา Commission TRC rows ใน สรุปCom ไม่เจอ")
@@ -154,11 +135,86 @@ def write_summarize_com(branch_totals: dict, date_start_day: int = 20) -> str:
     return f"✅ เขียน สรุปCom สำเร็จ {written}/{len(trc_row_map)} สาขา"
 
 
+SHEET_SUM_O2O = "sum (ตัดO2O)"
+
+
+def clear_and_copy_from_sum_o2o(progress_cb=None) -> str:
+    gc = get_client()
+    sh = gc.open_by_key(SHEET_ID)
+
+    if progress_cb:
+        progress_cb("อ่านข้อมูลจากชีท sum(ตัดO2O)...")
+    ws_src = sh.worksheet(SHEET_SUM_O2O)
+    src_values = ws_src.get_all_values()
+
+    if not src_values:
+        raise ValueError("ชีท sum(ตัดO2O) ว่างเปล่า")
+
+    if progress_cb:
+        progress_cb("ล้างข้อมูลใน Com ERP...")
+    ws_dst = sh.worksheet(SHEET_COM_ERP)
+    dst_values = ws_dst.get_all_values()
+
+    header_row_idx = None
+    for i, row in enumerate(dst_values):
+        if row and row[0] == "สาขา":
+            header_row_idx = i
+            break
+
+    if header_row_idx is None:
+        raise ValueError("หา header row (สาขา) ใน Com ERP ไม่เจอ")
+
+    data_start_row = header_row_idx + 2
+    total_rows = len(dst_values)
+
+    if total_rows >= data_start_row:
+        n_cols = max(len(r) for r in src_values) if src_values else 39
+        clear_range = f"A{data_start_row}:{gspread.utils.rowcol_to_a1(total_rows, n_cols)}"
+        ws_dst.batch_clear([clear_range])
+
+    src_header_idx = None
+    for i, row in enumerate(src_values):
+        if row and row[0] == "สาขา":
+            src_header_idx = i
+            break
+
+    if src_header_idx is None:
+        raise ValueError("หา header row (สาขา) ใน sum(ตัดO2O) ไม่เจอ")
+
+    if progress_cb:
+        progress_cb("คัดลอกวันที่จาก sum(ตัดO2O)...")
+    src_header = src_values[src_header_idx]
+    dst_header_row = header_row_idx + 1
+
+    date_col_start = 3
+    date_vals = src_header[2:]
+    if date_vals:
+        date_range = (
+            f"{gspread.utils.rowcol_to_a1(dst_header_row, date_col_start)}"
+            f":{gspread.utils.rowcol_to_a1(dst_header_row, date_col_start + len(date_vals) - 1)}"
+        )
+        ws_dst.update(date_range, [date_vals], value_input_option="USER_ENTERED")
+
+    if progress_cb:
+        progress_cb("คัดลอกข้อมูลพนักงานจาก sum(ตัดO2O)...")
+
+    data_rows = src_values[src_header_idx + 1:]
+    data_rows = [r for r in data_rows if any(v for v in r)]
+
+    if data_rows:
+        max_cols = max(len(r) for r in data_rows)
+        data_rows = [r + [""] * (max_cols - len(r)) for r in data_rows]
+
+        write_range = (
+            f"A{data_start_row}"
+            f":{gspread.utils.rowcol_to_a1(data_start_row + len(data_rows) - 1, max_cols)}"
+        )
+        ws_dst.update(write_range, data_rows, value_input_option="USER_ENTERED")
+
+    return f"✅ คัดลอก {len(data_rows)} แถวจาก sum(ตัดO2O) → Com ERP สำเร็จ"
+
+
 def read_sum_sheet(xlsx_path: str) -> tuple:
-    """
-    อ่านข้อมูลจากชีท sum(ตัดO2O) ในไฟล์ xlsx
-    คืนค่า (rows, dates, branch_totals)
-    """
     import openpyxl
     wb = openpyxl.load_workbook(xlsx_path, data_only=True)
     ws = wb["sum (ตัดO2O)"]
@@ -167,7 +223,6 @@ def read_sum_sheet(xlsx_path: str) -> tuple:
     if not all_rows:
         raise ValueError("ชีท sum(ตัดO2O) ว่างเปล่า")
 
-    # หา header row (col A = "สาขา")
     header_idx = None
     for i, row in enumerate(all_rows):
         if row and row[0] == "สาขา":
@@ -176,13 +231,11 @@ def read_sum_sheet(xlsx_path: str) -> tuple:
     if header_idx is None:
         raise ValueError("หา header ใน sum(ตัดO2O) ไม่เจอ")
 
-    # อ่านวันที่จาก header (col 3-34)
     header = all_rows[header_idx]
     dates = []
-    for j in range(2, 34):  # index 2-33 = col C-AH
+    for j in range(2, 34):
         v = header[j] if j < len(header) else None
         if v is not None:
-            # แปลงเป็น string
             if hasattr(v, 'strftime'):
                 dates.append(v.strftime("%d/%m/%y"))
             else:
@@ -190,9 +243,8 @@ def read_sum_sheet(xlsx_path: str) -> tuple:
         else:
             dates.append("")
 
-    # อ่านข้อมูลแถวหลัง header
     rows = []
-    branch_totals = {}  # {"T2": [32 vals]}
+    branch_totals = {}
 
     for i in range(header_idx + 1, len(all_rows)):
         row = all_rows[i]
@@ -202,13 +254,11 @@ def read_sum_sheet(xlsx_path: str) -> tuple:
         branch = str(row[0]) if row[0] else ""
         name = str(row[1]) if row[1] else ""
 
-        # daily values (col 3-34, index 2-33)
         daily = []
         for j in range(2, 34):
             v = row[j] if j < len(row) else None
             daily.append(float(v) if v is not None else 0.0)
 
-        # summary cols (index 35=คอมรายคน, 36=คอมรวม, 37=ยอดขาย, 38=%Com)
         def _f(idx):
             return float(row[idx]) if idx < len(row) and row[idx] is not None else 0.0
 
@@ -230,7 +280,6 @@ def read_sum_sheet(xlsx_path: str) -> tuple:
             "is_total": is_total,
         })
 
-        # เก็บ branch totals (แถว "รวม" ของแต่ละสาขา)
         if is_total and branch:
             branch_totals[branch] = daily
 
