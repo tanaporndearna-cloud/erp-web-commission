@@ -191,19 +191,45 @@ def copy_sum_o2o_to_com_erp(xlsx_path: str, progress_cb=None) -> str:
             return val
 
     all_rows = []
-    for row in ws_src.iter_rows(values_only=False):
+    cell_formats = []  # เก็บ (row_1idx, col_1idx, bg_hex, is_bold) สำหรับ cell ที่มีสี/ตัวหนา
+
+    for ri, row in enumerate(ws_src.iter_rows(values_only=False)):
         processed = []
-        for cell in row:
+        for ci, cell in enumerate(row):
             val = cell.value
             if val is None:
                 processed.append("")
             elif hasattr(val, 'strftime'):
                 processed.append(val.strftime("%d/%m/%y"))
             elif isinstance(val, (int, float)) and cell.is_date:
-                # openpyxl ตรวจ number format ว่าเป็น date
                 processed.append(_excel_serial_to_str(val))
             else:
                 processed.append(val)
+
+            # อ่านสีพื้นหลัง
+            bg_hex = None
+            try:
+                fill = cell.fill
+                if fill and fill.patternType not in (None, 'none'):
+                    fg = fill.fgColor
+                    if fg and fg.type == 'rgb':
+                        argb = fg.rgb  # AARRGGBB
+                        if argb and argb not in ('00000000', 'FFFFFFFF', 'FF000000'):
+                            bg_hex = argb[2:]  # เอาแค่ RRGGBB
+            except Exception:
+                pass
+
+            # อ่าน bold
+            is_bold = False
+            try:
+                if cell.font and cell.font.bold:
+                    is_bold = True
+            except Exception:
+                pass
+
+            if bg_hex or is_bold:
+                cell_formats.append((ri + 1, ci + 1, bg_hex, is_bold))
+
         all_rows.append(processed)
 
     wb.close()
@@ -235,6 +261,29 @@ def copy_sum_o2o_to_com_erp(xlsx_path: str, progress_cb=None) -> str:
         f"A1:{gspread.utils.rowcol_to_a1(total_rows, max_cols)}",
         {"numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
     )
+
+    # ===== Apply สีพื้นหลัง + ตัวหนา =====
+    if cell_formats:
+        if progress_cb:
+            progress_cb(f"ใส่สีและตัวหนา ({len(cell_formats)} cells)...")
+
+        fmt_requests = []
+        for (r, c, bg_hex, is_bold) in cell_formats:
+            cell_a1 = gspread.utils.rowcol_to_a1(r, c)
+            fmt = {}
+            if bg_hex:
+                rr = int(bg_hex[0:2], 16) / 255
+                gg = int(bg_hex[2:4], 16) / 255
+                bb = int(bg_hex[4:6], 16) / 255
+                fmt["backgroundColor"] = {"red": rr, "green": gg, "blue": bb}
+            if is_bold:
+                fmt["textFormat"] = {"bold": True}
+            if fmt:
+                fmt_requests.append({"range": cell_a1, "format": fmt})
+
+        # batch_format ส่งทีเดียว
+        if fmt_requests:
+            ws_dst.batch_format(fmt_requests)
 
     return f"✅ คัดลอก {total_rows} แถวจาก sum(ตัดO2O) → Com ERP สำเร็จ"
 
