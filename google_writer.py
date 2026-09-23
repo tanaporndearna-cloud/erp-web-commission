@@ -278,6 +278,8 @@ def copy_sum_o2o_to_com_erp(xlsx_path: str, progress_cb=None) -> str:
                 fmt["backgroundColor"] = {"red": rr, "green": gg, "blue": bb}
             if is_bold:
                 fmt["textFormat"] = {"bold": True}
+            # ใส่ number format ทุกครั้งที่ apply สี เพื่อไม่ให้ทับ format เดิม
+            fmt["numberFormat"] = {"type": "NUMBER", "pattern": "#,##0.00"}
             if fmt:
                 fmt_requests.append({"range": cell_a1, "format": fmt})
 
