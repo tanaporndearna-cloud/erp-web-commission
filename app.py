@@ -31,9 +31,6 @@ with st.sidebar:
     year_be = st.number_input("ปี (พ.ศ.)", min_value=2560, max_value=2600, value=today.year + 543)
 
     st.divider()
-    write_to_sheet = st.toggle("📤 เขียนลง Google Sheet", value=True)
-    if write_to_sheet:
-        st.info("จะเขียนข้อมูลลงชีท **Com ERP** และ **สรุปCom** ใน test commission SL/2026")
 
 # ===== File Upload =====
 st.subheader("📁 อัปโหลดไฟล์")
@@ -139,33 +136,7 @@ if run_btn and erp_file is not None:
                 else:
                     st.success(f"✅ มีค่า > 0 จำนวน {len(non_zero)} แถว")
 
-            # --- Step 3: Write to Google Sheet ---
-            if write_to_sheet:
-                st.subheader("📤 เขียนลง Google Sheet...")
-
-                try:
-                    from google_writer import write_com_erp, write_summarize_com
-
-                    prog = st.progress(0, "กำลังเขียนชีท Com ERP...")
-
-                    def erp_progress(current, total):
-                        prog.progress(current / total, f"เขียน Com ERP: {current}/{total} แถว")
-
-                    with st.spinner("เขียนชีท Com ERP..."):
-                        msg1 = write_com_erp(rows, dates, erp_progress)
-                    st.success(msg1)
-
-                    with st.spinner("เขียนชีท สรุปCom..."):
-                        msg2 = write_summarize_com(branch_totals)
-                    st.success(msg2)
-
-                    prog.empty()
-
-                except Exception as e:
-                    st.error(f"เขียน Google Sheet ไม่สำเร็จ: {e}")
-                    st.warning("กรุณาตรวจสอบ Service Account credentials ใน secrets.toml")
-
-            # --- Step 4: Download + เก็บไฟล์ไว้ใน session ---
+            # --- Step 3: Download + เก็บไฟล์ไว้ใน session ---
             st.subheader("⬇️ ดาวน์โหลดไฟล์ผลลัพธ์")
             with open(output_path, "rb") as f:
                 output_bytes = f.read()
