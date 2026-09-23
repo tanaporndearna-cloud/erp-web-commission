@@ -254,15 +254,9 @@ def copy_sum_o2o_to_com_erp(xlsx_path: str, progress_cb=None) -> str:
     write_range = f"A1:{gspread.utils.rowcol_to_a1(total_rows, max_cols)}"
     ws_dst.update(write_range, normalized, value_input_option="USER_ENTERED")
 
-    if progress_cb:
-        progress_cb("รีเซ็ตรูปแบบตัวเลข...")
+    full_range = f"A1:{gspread.utils.rowcol_to_a1(total_rows, max_cols)}"
 
-    ws_dst.format(
-        f"A1:{gspread.utils.rowcol_to_a1(total_rows, max_cols)}",
-        {"numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
-    )
-
-    # ===== Apply สีพื้นหลัง + ตัวหนา =====
+    # ===== Apply สีพื้นหลัง + ตัวหนา ก่อน =====
     if cell_formats:
         if progress_cb:
             progress_cb(f"ใส่สีและตัวหนา ({len(cell_formats)} cells)...")
@@ -278,14 +272,20 @@ def copy_sum_o2o_to_com_erp(xlsx_path: str, progress_cb=None) -> str:
                 fmt["backgroundColor"] = {"red": rr, "green": gg, "blue": bb}
             if is_bold:
                 fmt["textFormat"] = {"bold": True}
-            # ใส่ number format ทุกครั้งที่ apply สี เพื่อไม่ให้ทับ format เดิม
-            fmt["numberFormat"] = {"type": "NUMBER", "pattern": "#,##0.00"}
             if fmt:
                 fmt_requests.append({"range": cell_a1, "format": fmt})
 
-        # batch_format ส่งทีเดียว
         if fmt_requests:
             ws_dst.batch_format(fmt_requests)
+
+    # ===== รีเซ็ต number format ทีหลัง (ทับสีได้ แต่ไม่ทับสี) =====
+    if progress_cb:
+        progress_cb("รีเซ็ตรูปแบบตัวเลข...")
+
+    ws_dst.format(
+        full_range,
+        {"numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
+    )
 
     return f"✅ คัดลอก {total_rows} แถวจาก sum(ตัดO2O) → Com ERP สำเร็จ"
 
