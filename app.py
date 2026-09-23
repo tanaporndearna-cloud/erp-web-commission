@@ -65,6 +65,7 @@ if erp_file is None:
 
 # ===== Processing =====
 if run_btn and erp_file is not None:
+    # บันทึกไฟล์ upload ลง temp
     with tempfile.TemporaryDirectory() as tmp_upload:
         erp_path = os.path.join(tmp_upload, erp_file.name)
         with open(erp_path, "wb") as f:
@@ -76,6 +77,7 @@ if run_btn and erp_file is not None:
             with open(pps_path, "wb") as f:
                 f.write(pps_file.getvalue())
 
+        # --- Step 1: Run Pipeline ---
         st.subheader("⚙️ คิดค่าคอม...")
         status_box = st.empty()
         log_box = st.expander("แสดง Log", expanded=False)
@@ -101,15 +103,22 @@ if run_btn and erp_file is not None:
 
             status_box.success("✅ คิดค่าคอมเสร็จแล้วค่ะ!")
 
+            # --- Step 2: Read Result ---
             from google_writer import read_sum_sheet
             rows, dates, branch_totals = read_sum_sheet(output_path)
             st.success(f"อ่านข้อมูลได้ {len(rows)} แถว, {len(branch_totals)} สาขา")
 
+            # แสดง Debug + Preview
             with st.expander("🔍 Debug: ค่าจริงใน xlsx (ก่อนเขียน Google Sheet)"):
                 import pandas as pd
+
+                # แสดงวันที่ที่ได้
                 st.write("**วันที่ (5 วันแรก):**", dates[:5])
+
+                # แสดงแถวทั้งหมดรวมถึงแถวรวม
                 preview = []
                 for r in rows:
+                    # หาผลรวม daily
                     daily_sum = sum(v for v in r["daily"] if v)
                     preview.append({
                         "สาขา": r["branch"],
@@ -122,16 +131,21 @@ if run_btn and erp_file is not None:
                     })
                 df_preview = pd.DataFrame(preview)
                 st.dataframe(df_preview, use_container_width=True)
+
+                # สรุป: มีค่า > 0 ไหม
                 non_zero = df_preview[df_preview["com_pp"] > 0]
                 if len(non_zero) == 0:
                     st.error("⚠️ ทุกแถวมีค่า com_pp = 0 — ปัญหาอยู่ที่การคำนวณใน xlsx (LibreOffice / SUMIFS)")
                 else:
                     st.success(f"✅ มีค่า > 0 จำนวน {len(non_zero)} แถว")
 
+            # --- Step 3: Write to Google Sheet ---
             if write_to_sheet:
                 st.subheader("📤 เขียนลง Google Sheet...")
+
                 try:
                     from google_writer import write_com_erp, write_summarize_com
+
                     prog = st.progress(0, "กำลังเขียนชีท Com ERP...")
 
                     def erp_progress(current, total):
@@ -151,9 +165,14 @@ if run_btn and erp_file is not None:
                     st.error(f"เขียน Google Sheet ไม่สำเร็จ: {e}")
                     st.warning("กรุณาตรวจสอบ Service Account credentials ใน secrets.toml")
 
+            # --- Step 4: Download + เก็บไฟล์ไว้ใน session ---
             st.subheader("⬇️ ดาวน์โหลดไฟล์ผลลัพธ์")
             with open(output_path, "rb") as f:
                 output_bytes = f.read()
+
+            # เก็บไว้ใน session_state เพื่อให้ปุ่มคัดลอกใช้ได้
+            st.session_state["last_output_bytes"] = output_bytes
+            st.session_state["last_output_name"] = os.path.basename(output_path)
 
             output_name = os.path.basename(output_path)
             st.download_button(
@@ -168,29 +187,58 @@ if run_btn and erp_file is not None:
             status_box.error(f"❌ เกิดข้อผิดพลาด: {e}")
             st.exception(e)
 
-# ===== Clear + Copy from sum(ตัดO2O) =====
+# ===== Copy sum(ตัดO2O) → Com ERP =====
 st.divider()
-st.subheader("🗑️ ล้าง Com ERP และคัดลอกจาก sum(ตัดO2O)")
-st.caption("ล้างข้อมูลใน Com ERP แล้วคัดลอกข้อมูลจากชีท sum(ตัดO2O) ใน Google Sheet มาวางเป็นค่า (ไม่มีสูตร)")
+st.subheader("📋 คัดลอก sum(ตัดO2O) → Com ERP")
+st.caption("อ่านข้อมูลจากไฟล์ xlsx แล้วเขียนลง Com ERP เป็นค่าธรรมดา (ไม่มีสูตร) — ล้างชีทก่อนด้วย App Script แล้วค่อยกดปุ่มนี้")
 
-clear_btn = st.button(
-    "🗑️ ล้าง + คัดลอกจาก sum(ตัดO2O)",
+# แสดงสถานะไฟล์ที่พร้อมใช้
+if "last_output_name" in st.session_state:
+    st.info(f"📁 ไฟล์พร้อม: **{st.session_state['last_output_name']}**")
+else:
+    st.warning("⚠️ ยังไม่มีไฟล์ — กรุณาคิดค่าคอมก่อน หรืออัปโหลดไฟล์ด้านล่าง")
+
+# อัปโหลดไฟล์เพิ่มเติม (กรณีเปิด app ใหม่)
+upload_xlsx = st.file_uploader(
+    "หรืออัปโหลดไฟล์ xlsx ที่มีชีท sum(ตัดO2O)",
+    type=["xlsx"],
+    key="copy_xlsx"
+)
+if upload_xlsx:
+    st.session_state["last_output_bytes"] = upload_xlsx.getvalue()
+    st.session_state["last_output_name"] = upload_xlsx.name
+
+copy_btn = st.button(
+    "📋 คัดลอก sum(ตัดO2O) → Com ERP",
     type="secondary",
     use_container_width=True,
+    disabled=("last_output_bytes" not in st.session_state),
 )
 
-if clear_btn:
+if copy_btn and "last_output_bytes" in st.session_state:
+    import tempfile as _tmp
     try:
-        from google_writer import clear_and_copy_from_sum_o2o
-        status_clear = st.empty()
+        from google_writer import copy_sum_o2o_to_com_erp, write_summarize_com, read_sum_sheet
+        status_copy = st.empty()
 
-        def clear_progress(msg):
-            status_clear.info(f"⏳ {msg}")
+        def copy_progress(msg):
+            status_copy.info(f"⏳ {msg}")
 
-        with st.spinner("กำลังดำเนินการ..."):
-            result = clear_and_copy_from_sum_o2o(progress_cb=clear_progress)
+        # เขียนไฟล์ bytes ลง temp file ชั่วคราว
+        with _tmp.NamedTemporaryFile(suffix=".xlsx", delete=False) as tf:
+            tf.write(st.session_state["last_output_bytes"])
+            tf_path = tf.name
 
-        status_clear.success(result)
+        # Step 1: คัดลอก sum(ตัดO2O) → Com ERP
+        with st.spinner("กำลังเขียน Com ERP..."):
+            result = copy_sum_o2o_to_com_erp(tf_path, progress_cb=copy_progress)
+        status_copy.success(result)
+
+        # Step 2: เขียนยอดรายสาขา → สรุปCom
+        with st.spinner("กำลังเขียน สรุปCom..."):
+            rows, dates, branch_totals = read_sum_sheet(tf_path)
+            msg2 = write_summarize_com(branch_totals)
+        st.success(msg2)
 
     except Exception as e:
         st.error(f"❌ เกิดข้อผิดพลาด: {e}")
