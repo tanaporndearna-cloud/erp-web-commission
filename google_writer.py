@@ -180,17 +180,30 @@ def copy_sum_o2o_to_com_erp(xlsx_path: str, progress_cb=None) -> str:
     if ws_src is None:
         raise ValueError(f"ไม่พบชีท sum(ตัดO2O) ในไฟล์ xlsx\nชีทที่มี: {wb.sheetnames}")
 
-    # อ่านทุก row เป็น plain values
+    # อ่านทุก row เป็น plain values (ตรวจจับ date cell ด้วย)
+    from datetime import datetime as _dt, timedelta as _td
+
+    def _excel_serial_to_str(val):
+        """แปลง Excel date serial → dd/mm/yy"""
+        try:
+            return (_dt(1899, 12, 30) + _td(days=int(val))).strftime("%d/%m/%y")
+        except Exception:
+            return val
+
     all_rows = []
-    for row in ws_src.iter_rows(values_only=True):
+    for row in ws_src.iter_rows(values_only=False):
         processed = []
         for cell in row:
-            if cell is None:
+            val = cell.value
+            if val is None:
                 processed.append("")
-            elif hasattr(cell, 'strftime'):
-                processed.append(cell.strftime("%d/%m/%y"))
+            elif hasattr(val, 'strftime'):
+                processed.append(val.strftime("%d/%m/%y"))
+            elif isinstance(val, (int, float)) and cell.is_date:
+                # openpyxl ตรวจ number format ว่าเป็น date
+                processed.append(_excel_serial_to_str(val))
             else:
-                processed.append(cell)
+                processed.append(val)
         all_rows.append(processed)
 
     wb.close()
