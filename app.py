@@ -189,7 +189,7 @@ copy_btn = st.button(
 if copy_btn and "last_output_bytes" in st.session_state:
     import tempfile as _tmp
     try:
-        from google_writer import copy_sum_o2o_to_com_erp, write_summarize_com, read_sum_sheet
+        from google_writer import copy_sum_o2o_to_com_erp, write_summarize_com, read_sum_sheet, update_monthly_titles
         status_copy = st.empty()
 
         def copy_progress(msg):
@@ -202,14 +202,19 @@ if copy_btn and "last_output_bytes" in st.session_state:
 
         # Step 1: คัดลอก sum(ตัดO2O) → Com ERP
         with st.spinner("กำลังเขียน Com ERP..."):
-            result = copy_sum_o2o_to_com_erp(tf_path, progress_cb=copy_progress)
+            result = copy_sum_o2o_to_com_erp(tf_path, progress_cb=copy_progress, month=int(month), year_be=int(year_be))
         status_copy.success(result)
 
         # Step 2: เขียนยอดรายสาขา → สรุปCom
         with st.spinner("กำลังเขียน สรุปCom..."):
             rows, dates, branch_totals = read_sum_sheet(tf_path)
-            msg2 = write_summarize_com(branch_totals)
+            msg2 = write_summarize_com(branch_totals, dates=dates)
         st.success(msg2)
+
+        # Step 3: อัปเดตหัวชีทตามเดือน
+        with st.spinner("กำลังอัปเดตหัวชีท..."):
+            msg3 = update_monthly_titles(int(month), int(year_be))
+        st.success(msg3)
 
     except Exception as e:
         st.error(f"❌ เกิดข้อผิดพลาด: {e}")
