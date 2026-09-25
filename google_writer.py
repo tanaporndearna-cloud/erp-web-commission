@@ -483,14 +483,20 @@ def read_sum_sheet(xlsx_path: str) -> tuple:
         raise ValueError("หา header ใน sum(ตัดO2O) ไม่เจอ")
 
     # อ่านวันที่จาก header (col 3-34)
+    import datetime as _dt
     header = all_rows[header_idx]
     dates = []
     for j in range(2, 34):  # index 2-33 = col C-AH
         v = header[j] if j < len(header) else None
         if v is not None:
-            # แปลงเป็น string
             if hasattr(v, 'strftime'):
+                # datetime/date object จาก openpyxl
                 dates.append(v.strftime("%d/%m/%y"))
+            elif isinstance(v, (int, float)) and 40000 < v < 60000:
+                # Excel serial number → แปลงเป็นวันที่
+                # Excel epoch: Dec 30, 1899 (รวม leap-year bug ของ Excel)
+                dt = _dt.date(1899, 12, 30) + _dt.timedelta(days=int(v))
+                dates.append(dt.strftime("%d/%m/%y"))
             else:
                 dates.append(str(v))
         else:
