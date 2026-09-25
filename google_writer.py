@@ -95,10 +95,12 @@ def write_com_erp(rows: list, dates: list, progress_cb=None) -> str:
     return f"✅ เขียน Com ERP สำเร็จ {len(rows)} แถว"
 
 
-def write_summarize_com(branch_totals: dict, date_start_day: int = 20) -> str:
+def write_summarize_com(branch_totals: dict, dates: list = None, date_start_day: int = 20) -> str:
     """
-    เขียนข้อมูลลงชีท สรุปCom
+    เขียนข้อมูลลงชีท สรุปCom โดย match วันที่จาก xlsx กับ header ของ Google Sheet
     branch_totals: {"T2": [v1..v32], "T3": [...], ...}
+    dates: list of date strings เช่น ["21/08/69", "22/08/69", ...] จาก read_sum_sheet
+           ถ้าไม่ส่งมา จะวางตามตำแหน่ง (พฤติกรรมเดิม)
     """
     gc = get_client()
     sh = gc.open_by_key(SHEET_ID)
@@ -124,54 +126,138 @@ def write_summarize_com(branch_totals: dict, date_start_day: int = 20) -> str:
     date_header_row = date_header_row_idx + 1  # 1-indexed
     date_col_start = 5  # col E
 
+    # สร้าง mapping: day_number → col_index (1-indexed) จาก header ของ Google Sheet
+    sheet_date_row = all_values[date_header_row_idx]
+    day_to_col = {}  # {21: 5, 22: 6, ..., 31: 15, 1: 16, ...}
+    sheet_last_date_col = date_col_start
+    for ci in range(date_col_start - 1, len(sheet_date_row)):
+        try:
+            day_num = int(sheet_date_row[ci])
+            day_to_col[day_num] = ci + 1  # 1-indexed
+            sheet_last_date_col = ci + 1
+        except (ValueError, TypeError):
+            pass
+
+    def _date_str_to_day(date_str: str):
+        """แปลง '21/08/69' → 21"""
+        try:
+            return int(str(date_str).split('/')[0])
+        except Exception:
+            return None
+
     # หา Commission TRC rows
-    trc_row_map = {}  # {"T2": row_idx_1based, ...}
+    trc_row_map = {}
     for i in range(date_header_row_idx + 1, len(all_values)):
         row = all_values[i]
         if len(row) >= 3 and row[1] == "Commission" and str(row[2]).startswith("TRC "):
             num = str(row[2]).replace("TRC ", "").strip()
-            trc_row_map[f"T{num}"] = i + 1  # 1-indexed
+            trc_row_map[f"T{num}"] = i + 1
 
     if not trc_row_map:
         raise ValueError("หา Commission TRC rows ใน สรุปCom ไม่เจอ")
 
     batch_data = []
     written = 0
+
     for branch, vals in branch_totals.items():
         if branch not in trc_row_map:
             continue
-        row = trc_row_map[branch]
-        row_vals = [round(float(v or 0), 2) for v in vals[:32]]
-        start_cell = gspread.utils.rowcol_to_a1(row, date_col_start)
-        end_cell = gspread.utils.rowcol_to_a1(row, date_col_start + len(row_vals) - 1)
-        batch_data.append({
-            "range": f"{start_cell}:{end_cell}",
-            "values": [row_vals]
-        })
+        row_idx = trc_row_map[branch]
+
+        if dates and day_to_col:
+            # ===== Match by day number =====
+            # สร้าง dict: day_number → value จาก xlsx
+            day_val_map = {}
+            for vi, date_str in enumerate(dates[:32]):
+                if vi >= len(vals):
+                    break
+                day_num = _date_str_to_day(date_str)
+                if day_num is not None:
+                    day_val_map[day_num] = round(float(vals[vi] or 0), 2)
+
+            # เขียนทีละ cell ตาม col ที่ตรงกับ day_number
+            for day_num, col in day_to_col.items():
+                val = day_val_map.get(day_num, 0)
+                cell_a1 = gspread.utils.rowcol_to_a1(row_idx, col)
+                batch_data.append({"range": cell_a1, "values": [[val]]})
+        else:
+            # ===== Fallback: วางตามตำแหน่ง (พฤติกรรมเดิม) =====
+            row_vals = [round(float(v or 0), 2) for v in vals[:32]]
+            start_cell = gspread.utils.rowcol_to_a1(row_idx, date_col_start)
+            end_cell = gspread.utils.rowcol_to_a1(row_idx, date_col_start + len(row_vals) - 1)
+            batch_data.append({"range": f"{start_cell}:{end_cell}", "values": [row_vals]})
+
         written += 1
 
     ws.batch_update(batch_data)
 
-    # ตั้ง number format #,##0.00 ให้ทุก cell ที่เขียน
-    fmt_ranges = []
-    for branch, vals in branch_totals.items():
+    # ตั้ง number format #,##0.00 ให้ช่วงวันที่ทั้งหมด
+    for branch in branch_totals:
         if branch not in trc_row_map:
             continue
-        row = trc_row_map[branch]
-        start_cell = gspread.utils.rowcol_to_a1(row, date_col_start)
-        end_cell = gspread.utils.rowcol_to_a1(row, date_col_start + min(len(vals), 32) - 1)
-        fmt_ranges.append(f"{start_cell}:{end_cell}")
-
-    for fmt_range in fmt_ranges:
-        ws.format(fmt_range, {"numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}})
+        row_idx = trc_row_map[branch]
+        start_cell = gspread.utils.rowcol_to_a1(row_idx, date_col_start)
+        end_cell = gspread.utils.rowcol_to_a1(row_idx, sheet_last_date_col)
+        ws.format(f"{start_cell}:{end_cell}", {"numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}})
 
     return f"✅ เขียน สรุปCom สำเร็จ {written}/{len(trc_row_map)} สาขา"
 
 
 SHEET_SUM_O2O = "sum (ตัดO2O)"
 
+THAI_MONTHS = [
+    "", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+    "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"
+]
 
-def copy_sum_o2o_to_com_erp(xlsx_path: str, progress_cb=None) -> str:
+# ชีทที่ต้องอัปเดตหัวตามเดือน (A1)
+MONTHLY_TITLE_SHEETS = [
+    "สรุปCom",
+    "สรุปComช่าง",
+    "ยืมระหว่างสาขาโซนใกล้",
+    "บิลกทม",
+]
+
+
+def update_monthly_titles(month: int, year_be: int) -> str:
+    """
+    อัปเดตหัวชีท A1 ของ 4 ชีทตามเดือน/ปีที่คิดค่าคอม
+    รูปแบบ: 'สรุปคอมมิชชั่น เดือน กันยายน 2569'
+    ค้นหาชีทแบบ case-insensitive
+    """
+    month_name = THAI_MONTHS[month] if 1 <= month <= 12 else f"เดือน{month}"
+    title = f"สรุปคอมมิชชั่น เดือน {month_name} {year_be}"
+
+    gc = get_client()
+    sh = gc.open_by_key(SHEET_ID)
+
+    all_worksheets = sh.worksheets()
+    all_sheet_names = {ws.title.lower(): ws for ws in all_worksheets}
+    updated = []
+
+    for sheet_name in MONTHLY_TITLE_SHEETS:
+        ws = all_sheet_names.get(sheet_name.lower())
+        if ws is None:
+            continue
+        ws.update("A1", [[title]], value_input_option="USER_ENTERED")
+        updated.append(ws.title)
+
+    return f"✅ อัปเดตหัวชีท {len(updated)} ชีท: {', '.join(updated)}"
+
+
+def _make_com_title(month: int, year_be: int) -> str:
+    """สร้างชื่อหัวชีท เช่น 'คอมมิชชั่นหน้าร้าน เดือนกันยายน 2569 (21 สิงหาคม 69 - 20 กันยายน 69)'"""
+    month_name = THAI_MONTHS[month] if 1 <= month <= 12 else f"เดือน{month}"
+    prev_month = 12 if month == 1 else month - 1
+    prev_month_name = THAI_MONTHS[prev_month]
+    year_short = year_be % 100  # เช่น 2569 → 69
+    return (
+        f"คอมมิชชั่นหน้าร้าน เดือน{month_name} {year_be} "
+        f"(21 {prev_month_name} {year_short} - 20 {month_name} {year_short})"
+    )
+
+
+def copy_sum_o2o_to_com_erp(xlsx_path: str, progress_cb=None, month: int = None, year_be: int = None) -> str:
     """
     อ่านข้อมูลทั้งหมดจากชีท sum(ตัดO2O) ในไฟล์ xlsx
     แล้วเขียนลง Google Sheet ชีท Com ERP เป็นค่าธรรมดา (ไม่มีสูตร)
@@ -301,6 +387,13 @@ def copy_sum_o2o_to_com_erp(xlsx_path: str, progress_cb=None) -> str:
         {"numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
     )
 
+    # ===== อัปเดต title ตามเดือน/ปีที่เลือก =====
+    if month and year_be:
+        if progress_cb:
+            progress_cb("อัปเดตชื่อเดือนใน Com ERP...")
+        title = _make_com_title(month, year_be)
+        ws_dst.update("B1", [[title]], value_input_option="USER_ENTERED")
+
     return f"✅ คัดลอก {total_rows} แถวจาก sum(ตัดO2O) → Com ERP สำเร็จ"
 
 
@@ -366,7 +459,14 @@ def read_sum_sheet(xlsx_path: str) -> tuple:
     """
     import openpyxl
     wb = openpyxl.load_workbook(xlsx_path, data_only=True)
-    ws = wb["sum (ตัดO2O)"]
+    # หาชีท sum(ตัดO2O) แบบ case-insensitive
+    ws = None
+    for name in wb.sheetnames:
+        if "sum" in name.lower() and "o2o" in name.lower():
+            ws = wb[name]
+            break
+    if ws is None:
+        raise ValueError(f"ไม่พบชีท sum(ตัดO2O) ในไฟล์\nชีทที่มี: {wb.sheetnames}")
 
     all_rows = list(ws.iter_rows(values_only=True))
     if not all_rows:
