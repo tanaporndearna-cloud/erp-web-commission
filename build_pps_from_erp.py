@@ -28,7 +28,18 @@ OUT_PATH = sys.argv[2]
 
 wb = openpyxl.load_workbook(IN_PATH)
 
-raw_ws = wb['PPS']
+# หาชีท PPS แบบ case-insensitive
+pps_sheet_name = None
+for name in wb.sheetnames:
+    if name.lower() == 'pps':
+        pps_sheet_name = name
+        break
+
+if pps_sheet_name is None:
+    print(f"ERROR: ไม่พบชีท PPS ในไฟล์ ชีทที่มี: {wb.sheetnames}", file=sys.stderr)
+    sys.exit(1)
+
+raw_ws = wb[pps_sheet_name]
 
 # Remove existing pps05 if any
 for name in ['pps05', 'PPS05', 'pps']:
