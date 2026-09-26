@@ -361,32 +361,37 @@ def _copy_sum_to_com(ss: gspread.Spreadsheet, src_sheet: str, dst_sheet: str) ->
 # ── Backend: Attendance & Payroll ────────────────────────────────
 
 def _clear_attendance(ss: gspread.Spreadsheet, sheet_name: str) -> dict:
-    """ล้างข้อมูลเวลาที่กรอกมือ (คงสูตรไว้)"""
+    """ล้างข้อมูลเวลาที่กรอกมือ
+    เฉพาะ col P-S (16-19) และ col X-Y (24-25) แถว 6-36 เท่านั้น
+    (คงสูตรไว้ — ไม่แตะ cell ที่เป็น formula)
+    """
+    ROW_START  = 6
+    ROW_END    = 36
+    # กลุ่มคอลัมน์ที่ต้องล้าง: [(col_start, col_end), ...]  1-indexed
+    COL_GROUPS = [(16, 19), (24, 25)]   # P-S, X-Y
+
     try:
-        ws       = ss.worksheet(sheet_name)
-        last_col = ws.col_count
-        num_cols = last_col - CFG["FIRST_ATT_COL"] + 1
-        if num_cols <= 0:
-            return {"ok": False, "msg": "ไม่พบข้อมูลในคอลัมน์ M เป็นต้นไป"}
-
-        CLEAR_END = 37   # ล้างถึงแค่ row 37 เพื่อคง "มาสาย"/"ขาดงาน" ที่ row 39-40
-        num_rows = CLEAR_END - CFG["DATA_START"] + 1
-        start_r  = CFG["DATA_START"]
-        start_c  = CFG["FIRST_ATT_COL"]
-        rng_a1   = f"{col_letter(start_c)}{start_r}:{col_letter(last_col)}{CLEAR_END}"
-
-        formulas = ws.get(rng_a1, value_render_option="FORMULA")
-        values   = ws.get(rng_a1, value_render_option="FORMATTED_VALUE")
+        ws = ss.worksheet(sheet_name)
 
         to_clear = []
-        for r_i in range(num_rows):
-            frow = formulas[r_i] if r_i < len(formulas) else []
-            vrow = values[r_i]   if r_i < len(values)   else []
-            for c_i in range(num_cols):
-                f = frow[c_i] if c_i < len(frow) else ""
-                v = vrow[c_i] if c_i < len(vrow) else ""
-                if not str(f).startswith("=") and str(v).strip() not in ("", "None"):
-                    to_clear.append(f"{col_letter(start_c + c_i)}{start_r + r_i}")
+        for col_s, col_e in COL_GROUPS:
+            rng_a1 = (f"{col_letter(col_s)}{ROW_START}:"
+                      f"{col_letter(col_e)}{ROW_END}")
+            formulas = ws.get(rng_a1, value_render_option="FORMULA")
+            values   = ws.get(rng_a1, value_render_option="FORMATTED_VALUE")
+
+            num_rows = ROW_END - ROW_START + 1
+            num_cols = col_e - col_s + 1
+            for r_i in range(num_rows):
+                frow = formulas[r_i] if r_i < len(formulas) else []
+                vrow = values[r_i]   if r_i < len(values)   else []
+                for c_i in range(num_cols):
+                    f = frow[c_i] if c_i < len(frow) else ""
+                    v = vrow[c_i] if c_i < len(vrow) else ""
+                    if not str(f).startswith("=") and str(v).strip() not in ("", "None"):
+                        to_clear.append(
+                            f"{col_letter(col_s + c_i)}{ROW_START + r_i}"
+                        )
 
         if not to_clear:
             return {"ok": True, "msg": "ไม่มีข้อมูลที่ต้องล้าง (สะอาดอยู่แล้ว)"}
