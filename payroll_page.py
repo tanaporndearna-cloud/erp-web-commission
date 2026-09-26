@@ -25,7 +25,7 @@ def _sheets_retry(func, *args, max_retries: int = 6, **kwargs):
         except gspread.exceptions.APIError as e:
             status = getattr(e.response, "status_code", None)
             if status == 429 and attempt < max_retries - 1:
-                wait = 10 * (2 ** attempt)   # 10 → 20 → 40 → 80 → 160 วินาที
+                wait = 5 * (2 ** attempt)   # 5 → 10 → 20 → 40 → 80 วินาที
                 time.sleep(wait)
             else:
                 raise
@@ -258,6 +258,10 @@ def render_payroll_page(gc: gspread.Client,
 
                         progress_bar.progress((idx + 1) / len(matched_pairs))
 
+                        # หน่วง 2 วินาทีระหว่างชีต เพื่อไม่ให้ชน rate limit 429
+                        if idx < len(matched_pairs) - 1:
+                            time.sleep(2)
+
                     # สรุปผล
                     status_text.empty()
                     if fail_count == 0:
@@ -379,6 +383,7 @@ def _clear_attendance(ss: gspread.Spreadsheet, sheet_name: str) -> dict:
     """ล้างข้อมูลเวลาที่กรอกมือ
     เฉพาะ col P-S (16-19) และ col X-Y (24-25) แถว 6-36 เท่านั้น
     (คงสูตรไว้ — ไม่แตะ cell ที่เป็น formula)
+    ใช้ FORMULA render อย่างเดียว เพื่อลด API call จาก 4 → 2 ครั้ง
     """
     ROW_START  = 6
     ROW_END    = 36
@@ -386,31 +391,31 @@ def _clear_attendance(ss: gspread.Spreadsheet, sheet_name: str) -> dict:
     COL_GROUPS = [(16, 19), (24, 25)]   # P-S, X-Y
 
     try:
-        ws = ss.worksheet(sheet_name)
+        ws = _sheets_retry(ss.worksheet, sheet_name)
 
         to_clear = []
         for col_s, col_e in COL_GROUPS:
             rng_a1 = (f"{col_letter(col_s)}{ROW_START}:"
                       f"{col_letter(col_e)}{ROW_END}")
-            formulas = ws.get(rng_a1, value_render_option="FORMULA")
-            values   = ws.get(rng_a1, value_render_option="FORMATTED_VALUE")
+            # ดึงแค่ FORMULA ครั้งเดียว (ลด read call ลงครึ่งหนึ่ง)
+            # เซลล์ที่มีค่าและไม่ใช่สูตร → formula จะเป็น string ธรรมดา (non-empty, no "=")
+            formulas = _sheets_retry(ws.get, rng_a1, value_render_option="FORMULA")
 
             num_rows = ROW_END - ROW_START + 1
             num_cols = col_e - col_s + 1
             for r_i in range(num_rows):
                 frow = formulas[r_i] if r_i < len(formulas) else []
-                vrow = values[r_i]   if r_i < len(values)   else []
                 for c_i in range(num_cols):
-                    f = frow[c_i] if c_i < len(frow) else ""
-                    v = vrow[c_i] if c_i < len(vrow) else ""
-                    if not str(f).startswith("=") and str(v).strip() not in ("", "None"):
+                    f = str(frow[c_i]).strip() if c_i < len(frow) else ""
+                    # ไม่ใช่สูตร AND มีข้อมูลอยู่ → ล้าง
+                    if f and not f.startswith("="):
                         to_clear.append(
                             f"{col_letter(col_s + c_i)}{ROW_START + r_i}"
                         )
 
         if not to_clear:
             return {"ok": True, "msg": "ไม่มีข้อมูลที่ต้องล้าง (สะอาดอยู่แล้ว)"}
-        ws.batch_clear(to_clear)
+        _sheets_retry(ws.batch_clear, to_clear)
         return {"ok": True, "msg": f"ล้างแล้ว {len(to_clear)} เซลล์ (สูตรยังอยู่ครบ)"}
     except Exception as e:
         return {"ok": False, "msg": str(e)}
@@ -433,7 +438,7 @@ def _generate_dates(ss: gspread.Spreadsheet, sheet_name: str,
             days.append(cur)
             cur += timedelta(days=1)
 
-        headers       = ws.row_values(CFG["HEADER_ROW"])
+        headers       = _sheets_retry(ws.row_values, CFG["HEADER_ROW"])
         cols          = find_col_indices(headers, CFG["HDR_DATE"], CFG["HDR_DAY_NAME"])
         date_cols     = cols[CFG["HDR_DATE"]]
         day_name_cols = cols[CFG["HDR_DAY_NAME"]]
@@ -470,7 +475,7 @@ def _generate_dates(ss: gspread.Spreadsheet, sheet_name: str,
                                     "values": [[DAY_EN_LIST[day_idx]]]})
             # ไม่ clear แถวที่เกิน เพื่อไม่ให้ทับส่วนสรุปด้านล่าง
 
-        ws.batch_update(updates)
+        _sheets_retry(ws.batch_update, updates)
         return {"ok": True,
                 "msg": f"สร้างวันที่ {num_rows} วัน ใน {len(date_cols)} block เรียบร้อยค่ะ"}
     except Exception as e:
@@ -531,7 +536,7 @@ def _import_attendance(ss: gspread.Spreadsheet, sheet_name: str,
         ws      = ss.worksheet(sheet_name)
         att_map = {r["วันที่"]: r for r in rows if r.get("วันที่")}
 
-        headers   = ws.row_values(CFG["HEADER_ROW"])
+        headers   = _sheets_retry(ws.row_values, CFG["HEADER_ROW"])
         cols      = find_col_indices(headers,
                                      CFG["HDR_DATE"], CFG["HDR_TIME_IN"],
                                      CFG["HDR_TIME_OUT"], CFG["HDR_NOTE"],
@@ -551,12 +556,12 @@ def _import_attendance(ss: gspread.Spreadsheet, sheet_name: str,
         end_c    = ws.col_count
         rng      = (f"{col_letter(start_c)}{CFG['DATA_START']}:"
                     f"{col_letter(end_c)}{CFG['DATA_END']}")
-        formulas = ws.get(rng, value_render_option="FORMULA")
+        formulas = _sheets_retry(ws.get, rng, value_render_option="FORMULA")
 
         # สร้าง map วันที่ → row number สำหรับแต่ละ block
         date_row_map: dict[tuple, int] = {}
         for bi, dc in enumerate(date_cols):
-            col_data = ws.col_values(dc)
+            col_data = _sheets_retry(ws.col_values, dc)
             for r_i, val in enumerate(col_data[CFG["DATA_START"] - 1: CFG["DATA_END"]]):
                 date_key = norm_date(str(val).strip())
                 if date_key:
