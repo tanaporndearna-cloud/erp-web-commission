@@ -608,6 +608,11 @@ def _export_history(ss: gspread.Spreadsheet, sheet_name: str,
 
         # วางที่ last_col + 2 (เว้น 1 คอลัมน์)
         paste_start = last_col + 2
+        paste_end   = paste_start + width - 1
+
+        # ── ขยาย Sheet ถ้าจำเป็น ──────────────────────────────────
+        if paste_end > ws.col_count:
+            ws.resize(rows=ws.row_count, cols=paste_end + 10)
 
         # ── เขียนลง Sheet ─────────────────────────────────────────
         updates = []
