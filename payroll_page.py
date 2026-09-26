@@ -602,7 +602,10 @@ def _import_attendance(ss: gspread.Spreadsheet, sheet_name: str,
                 pasted += 1
 
         if updates:
-            ws.batch_update(updates)
+            # USER_ENTERED ให้ Sheets parse "08:47" เป็น serial time จริงๆ
+            # (ไม่ใช่ text ธรรมดา) เพื่อให้สูตรเปรียบเทียบเวลาได้ถูกต้อง
+            _sheets_retry(ws.batch_update, updates,
+                          value_input_option="USER_ENTERED")
         return {"ok": True, "msg": f"วางข้อมูล {pasted} วัน เรียบร้อยค่ะ"}
     except Exception as e:
         return {"ok": False, "msg": str(e)}
