@@ -601,7 +601,7 @@ def _export_history(ss: gspread.Spreadsheet, sheet_name: str,
         src_range = {
             "sheetId"         : src_sheet_id,
             "startRowIndex"   : 0,
-            "endRowIndex"     : NUM_ROWS,        # 0-indexed exclusive = row 40
+            "endRowIndex"     : NUM_ROWS,
             "startColumnIndex": COL_HIST_START - 1,   # 0-indexed
             "endColumnIndex"  : COL_HIST_END,          # 0-indexed exclusive
         }
@@ -613,28 +613,28 @@ def _export_history(ss: gspread.Spreadsheet, sheet_name: str,
             "endColumnIndex"  : paste_end - 1,
         }
 
-        # ── 2 requests: copy format ก่อน แล้ว copy values (ไม่มีสูตร) ──
-        body = {"requests": [
-            # 1) copy สี + เส้นขอบ + formatting ทั้งหมด
-            {
-                "copyPaste": {
-                    "source"         : src_range,
-                    "destination"    : dst_range,
-                    "pasteType"      : "PASTE_FORMAT",
-                    "pasteOrientation": "NORMAL"
-                }
-            },
-            # 2) copy ค่า (values only — ไม่มีสูตร) ทับลงบน format ที่วางไว้แล้ว
-            {
-                "copyPaste": {
-                    "source"         : src_range,
-                    "destination"    : dst_range,
-                    "pasteType"      : "PASTE_VALUES",
-                    "pasteOrientation": "NORMAL"
-                }
-            },
-        ]}
+        # ── Step 1: อ่านค่า source ก่อน paste (เพื่อเอา "มาสาย" และค่านิ่งทั้งหมด)
+        src_a1 = (f"{col_letter(COL_HIST_START)}1:"
+                  f"{col_letter(COL_HIST_END)}{NUM_ROWS}")
+        src_values = ws.get(src_a1, value_render_option="FORMATTED_VALUE")
+
+        # ── Step 2: PASTE_NORMAL — copy ทุกอย่างรวมสี+เส้น+รูป ──────────
+        body = {"requests": [{
+            "copyPaste": {
+                "source"          : src_range,
+                "destination"     : dst_range,
+                "pasteType"       : "PASTE_NORMAL",
+                "pasteOrientation": "NORMAL"
+            }
+        }]}
         ss.batch_update(body)
+
+        # ── Step 3: write source values ทับ destination
+        #    แปลงสูตรให้เป็นค่านิ่ง และ "มาสาย" ก็ยังอยู่ครบ ─────────────
+        dst_a1 = (f"{col_letter(paste_start)}1:"
+                  f"{col_letter(paste_end - 1)}{NUM_ROWS}")
+        if src_values:
+            ws.update(dst_a1, src_values, value_input_option="RAW")
 
         return {"ok": True,
                 "msg": (f"บันทึกประวัติ {month_yr} ที่คอลัมน์ "
