@@ -566,64 +566,64 @@ def _import_attendance(ss: gspread.Spreadsheet, sheet_name: str,
 def _export_history(ss: gspread.Spreadsheet, sheet_name: str,
                     month_yr: str,
                     ss_db: gspread.Spreadsheet | None = None) -> dict:
-    """บันทึกข้อมูลเวลาลงชีตประวัติ — ทั้งในเทมเพลตและ DB (ถ้ามี)"""
+    """
+    บันทึกประวัติเงินเดือน — copy คอลัมน์ M–Y (col 13–25) จากชีตพนักงาน
+    แล้ววางต่อในชีตเดิม โดยเว้น 1 คอลัมน์จากข้อมูลล่าสุด
+    """
+    COL_HIST_START = 13   # M (1-indexed)
+    COL_HIST_END   = 25   # Y (1-indexed)
+    TEMPLATE_END   = 25   # Y — จบเทมเพลตหลัก (ไม่วางทับ A–Y)
+
     try:
-        ws      = ss.worksheet(sheet_name)
-        headers = ws.row_values(CFG["HEADER_ROW"])
-        cols    = find_col_indices(headers,
-                                   CFG["HDR_DATE"], CFG["HDR_TIME_IN"],
-                                   CFG["HDR_TIME_OUT"], CFG["HDR_NOTE"],
-                                   CFG["HDR_DAY_NAME"])
+        ws = ss.worksheet(sheet_name)
 
-        date_cols = cols[CFG["HDR_DATE"]]
-        if not date_cols:
-            return {"ok": False, "msg": "ไม่พบคอลัมน์วันที่"}
+        # ── อ่านข้อมูล M–Y ทุกแถว (แถว 1 ถึง DATA_END) ──────────
+        num_rows = CFG["DATA_END"]
+        range_str = (f"{col_letter(COL_HIST_START)}1:"
+                     f"{col_letter(COL_HIST_END)}{num_rows}")
+        block = ws.get(range_str)   # list of rows (list of str)
 
-        dc   = date_cols[0]
-        ti_c = cols[CFG["HDR_TIME_IN"]][0]  if cols[CFG["HDR_TIME_IN"]]  else None
-        to_c = cols[CFG["HDR_TIME_OUT"]][0] if cols[CFG["HDR_TIME_OUT"]] else None
-        nt_c = cols[CFG["HDR_NOTE"]][0]     if cols[CFG["HDR_NOTE"]]     else None
-        dn_c = cols[CFG["HDR_DAY_NAME"]][0] if cols[CFG["HDR_DAY_NAME"]] else None
+        # pad แถวสั้น ให้ครบ 13 คอลัมน์
+        width = COL_HIST_END - COL_HIST_START + 1
+        padded = []
+        for row in block:
+            r = list(row) + [""] * (width - len(row))
+            padded.append(r[:width])
+        # เติมแถวว่างถ้าข้อมูลน้อยกว่า num_rows
+        while len(padded) < num_rows:
+            padded.append([""] * width)
 
-        date_vals = ws.col_values(dc)
-        ti_vals   = ws.col_values(ti_c) if ti_c else []
-        to_vals   = ws.col_values(to_c) if to_c else []
-        nt_vals   = ws.col_values(nt_c) if nt_c else []
-        dn_vals   = ws.col_values(dn_c) if dn_c else []
+        if not any(any(c for c in r) for r in padded):
+            return {"ok": False, "msg": "ไม่พบข้อมูลในช่วง M–Y"}
 
-        now      = date.today().isoformat()
-        new_rows = []
-        for i in range(CFG["DATA_START"] - 1, CFG["DATA_END"]):
-            dv = date_vals[i] if i < len(date_vals) else ""
-            if not str(dv).strip():
-                continue
-            new_rows.append([
-                now, sheet_name, month_yr, str(dv),
-                dn_vals[i] if i < len(dn_vals) else "",
-                ti_vals[i] if i < len(ti_vals) else "",
-                to_vals[i] if i < len(to_vals) else "",
-                nt_vals[i] if i < len(nt_vals) else "",
-            ])
+        # ── หา last used column ในชีต ────────────────────────────
+        all_vals = ws.get_all_values()
+        last_col = TEMPLATE_END  # อย่างน้อยสุด = Y (col 25)
+        for row in all_vals:
+            for ci in range(len(row) - 1, -1, -1):
+                if row[ci].strip():
+                    if ci + 1 > last_col:
+                        last_col = ci + 1
+                    break
 
-        if not new_rows:
-            return {"ok": False, "msg": "ไม่พบข้อมูลในเทมเพลต"}
+        # วางที่ last_col + 2 (เว้น 1 คอลัมน์)
+        paste_start = last_col + 2
 
-        # บันทึกในเทมเพลต
-        hist_tmpl = _get_or_create_history_sheet(ss)
-        hist_tmpl.append_rows(new_rows)
+        # ── เขียนลง Sheet ─────────────────────────────────────────
+        updates = []
+        for ri, row in enumerate(padded, start=1):
+            for ci, val in enumerate(row):
+                col_num = paste_start + ci
+                updates.append({
+                    "range": f"{col_letter(col_num)}{ri}",
+                    "values": [[val]]
+                })
 
-        # บันทึกใน DB ด้วย (ถ้ามี)
-        db_msg = ""
-        if ss_db:
-            try:
-                hist_db = _get_or_create_history_sheet(ss_db)
-                hist_db.append_rows(new_rows)
-                db_msg = " + ฐานข้อมูล"
-            except Exception as e:
-                db_msg = f" (DB ล้มเหลว: {e})"
+        # batch update ทีเดียว
+        ws.batch_update(updates)
 
         return {"ok": True,
-                "msg": (f"บันทึก {len(new_rows)} แถว ลงชีต "
-                        f"\"{CFG['HISTORY_SHEET']}\"{db_msg} เรียบร้อยค่ะ")}
+                "msg": (f"บันทึกประวัติ {month_yr} ลงชีต \"{sheet_name}\" "
+                        f"ที่คอลัมน์ {col_letter(paste_start)} เรียบร้อยค่ะ")}
     except Exception as e:
         return {"ok": False, "msg": str(e)}
