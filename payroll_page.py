@@ -546,6 +546,23 @@ def _import_attendance(ss: gspread.Spreadsheet, sheet_name: str,
             row_f = formulas[f_row_idx]
             return ci < len(row_f) and str(row_f[ci]).startswith("=")
 
+        DAY_EN = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]   # 0=Mon…6=Sun
+        COL_DAY_EN = 14   # column N — ชื่อวัน (En) สำหรับสูตร IF(N6="Su",...)
+
+        def day_en_from_datestr(ds: str) -> str:
+            """แปลง 'dd/mm/YYYY_BE' เป็น 'Su','Mo',... (ปีพุทธ → คริสต์ -543)"""
+            try:
+                parts = ds.split("/")
+                if len(parts) != 3:
+                    return ""
+                d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
+                if y > 2400:          # ปีพุทธศักราช
+                    y -= 543
+                from datetime import date as _date
+                return DAY_EN[_date(y, m, d).weekday()]
+            except Exception:
+                return ""
+
         updates = []
         pasted  = 0
 
@@ -575,6 +592,13 @@ def _import_attendance(ss: gspread.Spreadsheet, sheet_name: str,
                 if dn_col and not is_formula(dn_col, r_num):
                     updates.append({"range": f"{col_letter(dn_col)}{r_num}",
                                     "values": [[att["วัน"]]]})
+
+                # เขียนชื่อวัน (En) ลง column N เสมอ (Mo/Tu/We/Th/Fr/Sa/Su)
+                day_abbr = day_en_from_datestr(date_key)
+                if day_abbr and not is_formula(COL_DAY_EN, r_num):
+                    updates.append({"range": f"N{r_num}",
+                                    "values": [[day_abbr]]})
+
                 pasted += 1
 
         if updates:
