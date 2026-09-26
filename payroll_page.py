@@ -516,6 +516,34 @@ def _generate_dates(ss: gspread.Spreadsheet, sheet_name: str,
             pass   # ถ้าหาไม่เจอก็ข้ามไป ไม่ให้ error หลัก
 
         _sheets_retry(ws.batch_update, updates)
+
+        # ── ไฮไลต์แถวอาทิตย์ N-Y สีเทา / ล้างวันอื่นกลับขาว ────────────
+        GRAY  = {"red": 211/255, "green": 211/255, "blue": 211/255}
+        WHITE = {"red": 1.0, "green": 1.0, "blue": 1.0}
+        COL_N_0 = 13   # N = col 14 (0-indexed)
+        COL_Y_0 = 25   # Y = col 25 → endColumnIndex exclusive
+
+        hl_requests = []
+        for i in range(num_rows):
+            row = CFG["DATA_START"] + i
+            d   = days[i]
+            bg  = GRAY if d.weekday() == 6 else WHITE   # 6 = Sunday
+            hl_requests.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": ws.id,
+                        "startRowIndex": row - 1,
+                        "endRowIndex": row,
+                        "startColumnIndex": COL_N_0,
+                        "endColumnIndex": COL_Y_0,
+                    },
+                    "cell": {"userEnteredFormat": {"backgroundColor": bg}},
+                    "fields": "userEnteredFormat.backgroundColor"
+                }
+            })
+        if hl_requests:
+            _sheets_retry(ss.batch_update, {"requests": hl_requests})
+
         return {"ok": True,
                 "msg": f"สร้างวันที่ {num_rows} วัน ใน {len(date_cols)} block เรียบร้อยค่ะ"}
     except Exception as e:
@@ -681,6 +709,34 @@ def _import_attendance(ss: gspread.Spreadsheet, sheet_name: str,
             # (ไม่ใช่ text ธรรมดา) เพื่อให้สูตรเปรียบเทียบเวลาได้ถูกต้อง
             _sheets_retry(ws.batch_update, updates,
                           value_input_option="USER_ENTERED")
+
+        # ── ไฮไลต์แถวที่หมายเหตุมีคำ "วันหยุด" N-Y สีเทา ───────────────
+        GRAY    = {"red": 211/255, "green": 211/255, "blue": 211/255}
+        COL_N_0 = 13   # N (0-indexed)
+        COL_Y_0 = 25   # Y+1 (0-indexed, exclusive)
+
+        holiday_requests = []
+        for (bi, date_key), r_num in date_row_map.items():
+            if date_key not in att_map:
+                continue
+            note = str(att_map[date_key].get("หมายเหตุ", ""))
+            if "วันหยุด" in note:
+                holiday_requests.append({
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": ws.id,
+                            "startRowIndex": r_num - 1,
+                            "endRowIndex": r_num,
+                            "startColumnIndex": COL_N_0,
+                            "endColumnIndex": COL_Y_0,
+                        },
+                        "cell": {"userEnteredFormat": {"backgroundColor": GRAY}},
+                        "fields": "userEnteredFormat.backgroundColor"
+                    }
+                })
+        if holiday_requests:
+            _sheets_retry(ss.batch_update, {"requests": holiday_requests})
+
         return {"ok": True, "msg": f"วางข้อมูล {pasted} วัน เรียบร้อยค่ะ"}
     except Exception as e:
         return {"ok": False, "msg": str(e)}
