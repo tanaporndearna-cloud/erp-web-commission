@@ -440,8 +440,9 @@ def _generate_dates(ss: gspread.Spreadsheet, sheet_name: str,
                 updates.append({"range": f"{col_letter(dc)}{row}",
                                 "values": [[date_str]]})
                 if dnc:
+                    DAY_EN_LIST = ["Su","Mo","Tu","We","Th","Fr","Sa"]
                     updates.append({"range": f"{col_letter(dnc)}{row}",
-                                    "values": [[DAY_TH[day_idx]]]})
+                                    "values": [[DAY_EN_LIST[day_idx]]]})
             # ล้างแถวที่เกิน
             for i in range(num_rows, CFG["DATA_END"] - CFG["DATA_START"] + 1):
                 row = CFG["DATA_START"] + i
