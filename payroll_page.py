@@ -14,6 +14,21 @@ import pandas as pd
 import gspread
 from datetime import date, timedelta
 import re
+import time
+
+
+def _sheets_retry(func, *args, max_retries: int = 6, **kwargs):
+    """เรียก Google Sheets API พร้อม retry อัตโนมัติเมื่อเจอ 429 (rate limit)"""
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except gspread.exceptions.APIError as e:
+            status = getattr(e.response, "status_code", None)
+            if status == 429 and attempt < max_retries - 1:
+                wait = 10 * (2 ** attempt)   # 10 → 20 → 40 → 80 → 160 วินาที
+                time.sleep(wait)
+            else:
+                raise
 
 # ── Config ──────────────────────────────────────────────────────
 # ค่า config ตรงกับ Code.gs ที่ deploy ไว้ใน Google Sheet
@@ -354,10 +369,11 @@ def _clear_attendance(ss: gspread.Spreadsheet, sheet_name: str) -> dict:
         if num_cols <= 0:
             return {"ok": False, "msg": "ไม่พบข้อมูลในคอลัมน์ M เป็นต้นไป"}
 
-        num_rows = CFG["DATA_END"] - CFG["DATA_START"] + 1
+        CLEAR_END = 37   # ล้างถึงแค่ row 37 เพื่อคง "มาสาย"/"ขาดงาน" ที่ row 39-40
+        num_rows = CLEAR_END - CFG["DATA_START"] + 1
         start_r  = CFG["DATA_START"]
         start_c  = CFG["FIRST_ATT_COL"]
-        rng_a1   = f"{col_letter(start_c)}{start_r}:{col_letter(last_col)}{CFG['DATA_END']}"
+        rng_a1   = f"{col_letter(start_c)}{start_r}:{col_letter(last_col)}{CLEAR_END}"
 
         formulas = ws.get(rng_a1, value_render_option="FORMULA")
         values   = ws.get(rng_a1, value_render_option="FORMATTED_VALUE")
@@ -580,8 +596,8 @@ def _export_history(ss: gspread.Spreadsheet, sheet_name: str,
         ws           = ss.worksheet(sheet_name)
         src_sheet_id = ws.id
 
-        # ── หา last used column ────────────────────────────────────
-        all_vals = ws.get_all_values()
+        # ── หา last used column (retry กัน 429) ───────────────────────
+        all_vals = _sheets_retry(ws.get_all_values)
         last_col = COL_HIST_END
         for row in all_vals:
             for ci in range(len(row) - 1, -1, -1):
@@ -595,8 +611,9 @@ def _export_history(ss: gspread.Spreadsheet, sheet_name: str,
 
         # ── ขยาย Sheet ถ้าจำเป็น ──────────────────────────────────
         if paste_end > ws.col_count:
-            ws.resize(rows=max(ws.row_count, NUM_ROWS),
-                      cols=paste_end + 10)
+            _sheets_retry(ws.resize,
+                          rows=max(ws.row_count, NUM_ROWS),
+                          cols=paste_end + 10)
 
         src_range = {
             "sheetId"         : src_sheet_id,
@@ -613,10 +630,12 @@ def _export_history(ss: gspread.Spreadsheet, sheet_name: str,
             "endColumnIndex"  : paste_end - 1,
         }
 
-        # ── Step 1: อ่านค่า source ก่อน paste (เพื่อเอา "มาสาย" และค่านิ่งทั้งหมด)
+        # ── Step 1: อ่านค่า source ก่อน paste ────────────────────────
         src_a1 = (f"{col_letter(COL_HIST_START)}1:"
                   f"{col_letter(COL_HIST_END)}{NUM_ROWS}")
-        src_values = ws.get(src_a1, value_render_option="FORMATTED_VALUE")
+        src_values = _sheets_retry(ws.get, src_a1,
+                                   value_render_option="FORMATTED_VALUE")
+        time.sleep(1)   # หน่วงเล็กน้อยก่อน batch_update
 
         # ── Step 2: PASTE_NORMAL — copy ทุกอย่างรวมสี+เส้น+รูป ──────────
         body = {"requests": [{
@@ -627,14 +646,15 @@ def _export_history(ss: gspread.Spreadsheet, sheet_name: str,
                 "pasteOrientation": "NORMAL"
             }
         }]}
-        ss.batch_update(body)
+        _sheets_retry(ss.batch_update, body)
+        time.sleep(1)   # หน่วงก่อน write values
 
-        # ── Step 3: write source values ทับ destination
-        #    แปลงสูตรให้เป็นค่านิ่ง และ "มาสาย" ก็ยังอยู่ครบ ─────────────
+        # ── Step 3: write source values ทับ destination ───────────────
         dst_a1 = (f"{col_letter(paste_start)}1:"
                   f"{col_letter(paste_end - 1)}{NUM_ROWS}")
         if src_values:
-            ws.update(dst_a1, src_values, value_input_option="RAW")
+            _sheets_retry(ws.update, dst_a1, src_values,
+                          value_input_option="RAW")
 
         return {"ok": True,
                 "msg": (f"บันทึกประวัติ {month_yr} ที่คอลัมน์ "
