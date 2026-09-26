@@ -230,33 +230,16 @@ PAYROLL_HIST_ID   = "1UMB2LlO_8BKevg_dvIrNmFeBpOG0OadUrYcgejBzPA4"
 
 @st.cache_resource
 def get_gspread_client():
-    """
-    สร้าง gspread client จาก Service Account credentials
-    วางไฟล์ credentials.json ไว้ในโฟลเดอร์เดียวกับ app.py
-    หรือตั้งค่า GOOGLE_APPLICATION_CREDENTIALS ใน environment
-    """
+    """สร้าง gspread client จาก st.secrets["gcp_service_account"] (เหมือน google_writer.py)"""
     import gspread
-    try:
-        # ลองใช้ Service Account file ก่อน
-        gc = gspread.service_account(filename="credentials.json")
-        return gc
-    except Exception:
-        pass
-    try:
-        # ลองใช้ environment variable
-        import json
-        creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-        if creds_json:
-            import tempfile as _tf
-            with _tf.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-                f.write(creds_json)
-                tmp_path = f.name
-            gc = gspread.service_account(filename=tmp_path)
-            os.unlink(tmp_path)
-            return gc
-    except Exception:
-        pass
-    return None
+    from google.oauth2.service_account import Credentials
+    SCOPES = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds_dict = dict(st.secrets["gcp_service_account"])
+    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    return gspread.authorize(creds)
 
 # เรนเดอร์ Payroll Page
 try:
