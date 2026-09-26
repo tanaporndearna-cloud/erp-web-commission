@@ -220,6 +220,59 @@ if copy_btn and "last_output_bytes" in st.session_state:
         st.error(f"❌ เกิดข้อผิดพลาด: {e}")
         st.exception(e)
 
+
+# ===== Payroll Section =====
+st.divider()
+
+# เชื่อม gspread สำหรับ Payroll (lazy — เชื่อมเฉพาะตอนที่จะใช้)
+PAYROLL_SHEET_ID  = "1oWaO8U1nNItgozvdSAcfN6QC-Ih78d0H9n5mJRfK6W4"
+PAYROLL_HIST_ID   = "1UMB2LlO_8BKevg_dvIrNmFeBpOG0OadUrYcgejBzPA4"
+
+@st.cache_resource
+def get_gspread_client():
+    """
+    สร้าง gspread client จาก Service Account credentials
+    วางไฟล์ credentials.json ไว้ในโฟลเดอร์เดียวกับ app.py
+    หรือตั้งค่า GOOGLE_APPLICATION_CREDENTIALS ใน environment
+    """
+    import gspread
+    try:
+        # ลองใช้ Service Account file ก่อน
+        gc = gspread.service_account(filename="credentials.json")
+        return gc
+    except Exception:
+        pass
+    try:
+        # ลองใช้ environment variable
+        import json
+        creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+        if creds_json:
+            import tempfile as _tf
+            with _tf.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                f.write(creds_json)
+                tmp_path = f.name
+            gc = gspread.service_account(filename=tmp_path)
+            os.unlink(tmp_path)
+            return gc
+    except Exception:
+        pass
+    return None
+
+# เรนเดอร์ Payroll Page
+try:
+    from payroll_page import render_payroll_page
+    gc = get_gspread_client()
+    if gc is None:
+        st.subheader("💰 จัดการเงินเดือน")
+        st.error("❌ ไม่พบ credentials.json — กรุณาวางไฟล์ Service Account ในโฟลเดอร์เดียวกับ app.py")
+        st.info("วิธีตั้งค่า: ไปที่ Google Cloud Console → Service Accounts → สร้าง Key (JSON) → วางไฟล์ชื่อ credentials.json")
+    else:
+        render_payroll_page(gc, PAYROLL_SHEET_ID, history_db_id=PAYROLL_HIST_ID)
+except ImportError:
+    st.subheader("💰 จัดการเงินเดือน")
+    st.warning("⚠️ ไม่พบ payroll_page.py — กรุณาวางไฟล์ในโฟลเดอร์เดียวกับ app.py")
+
+
 # ===== Footer =====
 st.divider()
 st.caption("TRC Motorsport · Commission Calculator · Powered by Streamlit")
