@@ -258,9 +258,9 @@ def render_payroll_page(gc: gspread.Client,
 
                         progress_bar.progress((idx + 1) / len(matched_pairs))
 
-                        # หน่วง 2 วินาทีระหว่างชีต เพื่อไม่ให้ชน rate limit 429
+                        # หน่วง 3 วินาทีระหว่างชีต เพื่อไม่ให้ชน rate limit 429
                         if idx < len(matched_pairs) - 1:
-                            time.sleep(2)
+                            time.sleep(3)
 
                     # สรุปผล
                     status_text.empty()
@@ -656,8 +656,11 @@ def _export_history(ss: gspread.Spreadsheet, sheet_name: str,
         NUM_ROWS = 100   # copy row 1–100 ทั้งหมด (รวม "มาสาย" และ section ด้านล่าง)
         width    = COL_HIST_END - COL_HIST_START + 1
 
-        ws           = ss.worksheet(sheet_name)
+        ws           = _sheets_retry(ss.worksheet, sheet_name)
         src_sheet_id = ws.id
+
+        # ── หน่วงก่อน export history เพื่อไม่ให้ชน rate limit ────────
+        time.sleep(2)
 
         # ── หา last used column (retry กัน 429) ───────────────────────
         all_vals = _sheets_retry(ws.get_all_values)
