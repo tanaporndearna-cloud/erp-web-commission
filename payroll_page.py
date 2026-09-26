@@ -574,9 +574,7 @@ def _export_history(ss: gspread.Spreadsheet, sheet_name: str,
     COL_HIST_END   = 25   # Y (1-indexed)
 
     try:
-        # copy เฉพาะแถวที่มีข้อมูลจริง (row 1 ถึง DATA_END) ไม่ copy แถวเปล่าด้านล่าง
-        # เพื่อไม่ให้ทับ/ลบ content อื่นในชีต
-        NUM_ROWS = CFG["DATA_END"]      # = 40 (ตาม config)
+        NUM_ROWS = 100   # copy row 1–100 ทั้งหมด (รวม "มาสาย" และ section ด้านล่าง)
         width    = COL_HIST_END - COL_HIST_START + 1
 
         ws           = ss.worksheet(sheet_name)
