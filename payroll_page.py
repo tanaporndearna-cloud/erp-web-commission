@@ -443,12 +443,7 @@ def _generate_dates(ss: gspread.Spreadsheet, sheet_name: str,
                     DAY_EN_LIST = ["Su","Mo","Tu","We","Th","Fr","Sa"]
                     updates.append({"range": f"{col_letter(dnc)}{row}",
                                     "values": [[DAY_EN_LIST[day_idx]]]})
-            # ล้างแถวที่เกิน
-            for i in range(num_rows, CFG["DATA_END"] - CFG["DATA_START"] + 1):
-                row = CFG["DATA_START"] + i
-                updates.append({"range": f"{col_letter(dc)}{row}", "values": [[""]]})
-                if dnc:
-                    updates.append({"range": f"{col_letter(dnc)}{row}", "values": [[""]]})
+            # ไม่ clear แถวที่เกิน เพื่อไม่ให้ทับส่วนสรุปด้านล่าง
 
         ws.batch_update(updates)
         return {"ok": True,
