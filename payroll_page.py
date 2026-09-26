@@ -145,64 +145,9 @@ def render_payroll_page(gc: gspread.Client,
     visible_sheets = [ws.title for ws in ss.worksheets()]
 
     # ══════════════════════════════════════════════════════════════
-    # ปุ่ม 1: คิดค่าคอม ERP — Import ข้อมูล ERP
+    # คิดเงินเดือนพนักงาน — Import เวลาเข้า-ออกงาน
     # ══════════════════════════════════════════════════════════════
-    with st.expander("1️⃣  คิดค่าคอม ERP (Import ข้อมูล ERP)", expanded=True):
-        st.caption("อัปโหลดไฟล์ยอดขาย ERP → นำเข้า Google Sheet เพื่อคำนวณค่าคอม")
-
-        sh_erp  = st.selectbox("📋 เลือก Sheet ปลายทาง", visible_sheets, key="sh_erp")
-        erp_file = st.file_uploader("📂 ไฟล์ข้อมูล ERP (.xlsx / .xls)",
-                                    type=["xlsx", "xls"], key="erp_file")
-
-        if erp_file:
-            erp_df = _read_erp_file(erp_file)
-            if erp_df is not None and not erp_df.empty:
-                st.dataframe(erp_df.head(10), use_container_width=True, hide_index=True)
-                st.caption(f"พบ {len(erp_df)} แถว | {len(erp_df.columns)} คอลัมน์")
-
-                if st.button("▶ นำเข้าข้อมูล ERP", type="primary", key="btn_erp"):
-                    with st.spinner("กำลังนำเข้า..."):
-                        result = _import_erp(ss, sh_erp, erp_df)
-                    if result["ok"]:
-                        st.success(f"✅ {result['msg']}")
-                    else:
-                        st.error(f"❌ {result['msg']}")
-            else:
-                st.warning("⚠️ อ่านไฟล์ ERP ไม่ได้ หรือไม่พบข้อมูล")
-
-    st.divider()
-
-    # ══════════════════════════════════════════════════════════════
-    # ปุ่ม 2: คัดลอก sum(ตัดO2O) → Com ERP
-    # ══════════════════════════════════════════════════════════════
-    with st.expander("2️⃣  คัดลอก sum(ตัดO2O) → Com ERP", expanded=False):
-        st.caption("คัดลอกยอดค่าคอมสุทธิจากชีต sum(ตัดO2O) ไปวางในคอลัมน์ Com ERP")
-
-        c1, c2 = st.columns(2)
-        with c1:
-            src_options = [s for s in visible_sheets
-                           if "sum" in s.lower() or "o2o" in s.lower() or "ตัด" in s]
-            src_sheet = st.selectbox("📊 Sheet ต้นทาง",
-                                     src_options if src_options else visible_sheets,
-                                     key="src_sum")
-        with c2:
-            dst_sheet = st.selectbox("📋 Sheet ปลายทาง (Com ERP)",
-                                     visible_sheets, key="dst_com")
-
-        if st.button("📋 คัดลอก sum(ตัดO2O) → Com ERP", type="primary", key="btn_copy"):
-            with st.spinner("กำลังคัดลอก..."):
-                result = _copy_sum_to_com(ss, src_sheet, dst_sheet)
-            if result["ok"]:
-                st.success(f"✅ {result['msg']}")
-            else:
-                st.error(f"❌ {result['msg']}")
-
-    st.divider()
-
-    # ══════════════════════════════════════════════════════════════
-    # ปุ่ม 3: คิดเงินเดือนพนักงาน — Import เวลาเข้า-ออกงาน
-    # ══════════════════════════════════════════════════════════════
-    with st.expander("3️⃣  คิดเงินเดือนพนักงาน (Import เวลาเข้า-ออกงาน)", expanded=False):
+    with st.expander("🧾  คิดเงินเดือนพนักงาน (Import เวลาเข้า-ออกงาน)", expanded=False):
         st.caption("อัปโหลดไฟล์เวลา → ล้างเก่า → สร้างวันที่ → วางเวลา → บันทึกประวัติ (ประมวลผลทุก Sheet พนักงานอัตโนมัติ)")
 
         att_file = st.file_uploader("📂 ไฟล์เวลาเข้า-ออกงาน (.xlsx / .xls)",
