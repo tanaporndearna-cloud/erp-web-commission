@@ -1,0 +1,647 @@
+"""
+payroll_page.py — TRC Motorsport: จัดการเงินเดือนรายเดือน
+เพิ่มเข้า Streamlit app เดิมได้เลย
+
+วิธีใช้ใน app.py หลัก:
+    from payroll_page import render_payroll_page
+    render_payroll_page(gc, sheet_id)
+    # หรือถ้ามี history DB:
+    render_payroll_page(gc, sheet_id, history_db_id="1UMB2LlO_8BKevg_dvIrNmFeBpOG0OadUrYcgejBzPA4")
+"""
+
+import streamlit as st
+import pandas as pd
+import gspread
+from datetime import date, timedelta
+import re
+
+# ── Config ──────────────────────────────────────────────────────
+# ค่า config ตรงกับ Code.gs ที่ deploy ไว้ใน Google Sheet
+CFG = {
+    "HEADER_ROW"    : 5,    # แถวหัวตาราง (1-indexed)
+    "DATA_START"    : 6,    # แถวแรกที่มีข้อมูล
+    "DATA_END"      : 40,   # แถวสุดท้าย
+    "FIRST_ATT_COL" : 13,   # คอลัมน์ M (1-indexed) — เริ่มต้นช่องเวลา
+
+    "HDR_DATE"     : "วันที่",
+    "HDR_TIME_IN"  : "เวลาเข้า",
+    "HDR_TIME_OUT" : "เวลาออก",
+    "HDR_NOTE"     : "หมายเหตุ",
+    "HDR_DAY_NAME" : "ชื่อวัน",
+
+    # คอลัมน์ในไฟล์เวลาเข้า-ออก (0-indexed) — ปรับตามไฟล์จริงถ้าจำเป็น
+    "ATT_DAY"     : 0,   # ชื่อวัน
+    "ATT_DATE"    : 5,   # วันที่
+    "ATT_TIME_IN" : 6,   # เวลาเข้างาน
+    "ATT_TIME_OUT": 7,   # เวลาออกงาน
+    "ATT_NOTE"    : 14,  # หมายเหตุ
+
+    "HISTORY_SHEET": "📚 ประวัติเงินเดือน",
+}
+
+HISTORY_COLS = ["บันทึกเมื่อ", "Sheet", "เดือน/ปี", "วันที่",
+                "ชื่อวัน", "เวลาเข้า", "เวลาออก", "หมายเหตุ"]
+
+DAY_TH   = ["อา.", "จ.", "อ.", "พ.", "พฤ.", "ศ.", "ส."]
+MONTH_TH = ["", "ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
+             "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
+
+
+# ── Helpers ─────────────────────────────────────────────────────
+
+def col_letter(n: int) -> str:
+    """แปลงเลขคอลัมน์ (1-indexed) เป็นตัวอักษร เช่น 13 → M"""
+    s = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def norm_date(val) -> str | None:
+    """แปลงค่าต่าง ๆ เป็น 'DD/MM/YYYY' (พ.ศ.)"""
+    if isinstance(val, str):
+        val = val.strip()
+        if re.match(r"^\d{2}/\d{2}/\d{4}$", val):
+            return val
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+            try:
+                d = pd.to_datetime(val, format=fmt)
+                return d.strftime("%d/%m/") + str(d.year + 543)
+            except Exception:
+                pass
+    if isinstance(val, pd.Timestamp):
+        return val.strftime("%d/%m/") + str(val.year + 543)
+    return None
+
+
+def find_col_indices(headers: list, *target_names) -> dict:
+    """หาตำแหน่งคอลัมน์ทุกตัวที่ตรงกับ target_names → {name: [col1, col2, ...]}"""
+    result = {name: [] for name in target_names}
+    for i, h in enumerate(headers):
+        h = str(h).strip()
+        for name in target_names:
+            if h == name:
+                result[name].append(i + 1)   # 1-indexed
+    return result
+
+
+def detect_period_from_df(att_df: pd.DataFrame):
+    """ดึงเดือน/ปี (พ.ศ.) จากข้อมูลในไฟล์ → (month, year_be)"""
+    try:
+        dates = att_df["วันที่"].dropna()
+        for d_str in reversed(dates.tolist()):
+            m = re.match(r"(\d{2})/(\d{2})/(\d{4})", str(d_str))
+            if m:
+                day, mon, yr = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                if day == 25:   # วันสิ้นสุดรอบ = 25
+                    return mon, yr
+        last = dates.iloc[-1]
+        m = re.match(r"(\d{2})/(\d{2})/(\d{4})", str(last))
+        if m:
+            return int(m.group(2)), int(m.group(3))
+    except Exception:
+        pass
+    return date.today().month, date.today().year + 543
+
+
+def _get_or_create_history_sheet(ss: gspread.Spreadsheet) -> gspread.Worksheet:
+    """เปิดหรือสร้างชีต '📚 ประวัติเงินเดือน'"""
+    try:
+        return ss.worksheet(CFG["HISTORY_SHEET"])
+    except gspread.WorksheetNotFound:
+        hist = ss.add_worksheet(CFG["HISTORY_SHEET"], rows=2000, cols=10)
+        hist.append_row(HISTORY_COLS)
+        hist.freeze(rows=1)
+        return hist
+
+
+# ── Main render function ─────────────────────────────────────────
+
+def render_payroll_page(gc: gspread.Client,
+                        sheet_id: str,
+                        history_db_id: str | None = "1UMB2LlO_8BKevg_dvIrNmFeBpOG0OadUrYcgejBzPA4"):
+    """
+    gc            = gspread.Client ที่ authenticate แล้ว
+    sheet_id      = Google Sheet ID ของไฟล์เทมเพลตเงินเดือน
+    history_db_id = Google Sheet ID ของฐานเก็บประวัติเงินเดือน (None = ไม่บันทึก DB)
+    """
+    st.header("👷 จัดการเงินเดือนรายเดือน")
+
+    try:
+        ss = gc.open_by_key(sheet_id)
+    except Exception as e:
+        st.error(f"เปิด Spreadsheet ไม่ได้: {e}")
+        return
+
+    # เปิด history DB ถ้ามี
+    ss_db = None
+    if history_db_id:
+        try:
+            ss_db = gc.open_by_key(history_db_id)
+        except Exception:
+            ss_db = None
+
+    visible_sheets = [ws.title for ws in ss.worksheets()]
+
+    # ══════════════════════════════════════════════════════════════
+    # ปุ่ม 1: คิดค่าคอม ERP — Import ข้อมูล ERP
+    # ══════════════════════════════════════════════════════════════
+    with st.expander("1️⃣  คิดค่าคอม ERP (Import ข้อมูล ERP)", expanded=True):
+        st.caption("อัปโหลดไฟล์ยอดขาย ERP → นำเข้า Google Sheet เพื่อคำนวณค่าคอม")
+
+        sh_erp  = st.selectbox("📋 เลือก Sheet ปลายทาง", visible_sheets, key="sh_erp")
+        erp_file = st.file_uploader("📂 ไฟล์ข้อมูล ERP (.xlsx / .xls)",
+                                    type=["xlsx", "xls"], key="erp_file")
+
+        if erp_file:
+            erp_df = _read_erp_file(erp_file)
+            if erp_df is not None and not erp_df.empty:
+                st.dataframe(erp_df.head(10), use_container_width=True, hide_index=True)
+                st.caption(f"พบ {len(erp_df)} แถว | {len(erp_df.columns)} คอลัมน์")
+
+                if st.button("▶ นำเข้าข้อมูล ERP", type="primary", key="btn_erp"):
+                    with st.spinner("กำลังนำเข้า..."):
+                        result = _import_erp(ss, sh_erp, erp_df)
+                    if result["ok"]:
+                        st.success(f"✅ {result['msg']}")
+                    else:
+                        st.error(f"❌ {result['msg']}")
+            else:
+                st.warning("⚠️ อ่านไฟล์ ERP ไม่ได้ หรือไม่พบข้อมูล")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════
+    # ปุ่ม 2: คัดลอก sum(ตัดO2O) → Com ERP
+    # ══════════════════════════════════════════════════════════════
+    with st.expander("2️⃣  คัดลอก sum(ตัดO2O) → Com ERP", expanded=False):
+        st.caption("คัดลอกยอดค่าคอมสุทธิจากชีต sum(ตัดO2O) ไปวางในคอลัมน์ Com ERP")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            src_options = [s for s in visible_sheets
+                           if "sum" in s.lower() or "o2o" in s.lower() or "ตัด" in s]
+            src_sheet = st.selectbox("📊 Sheet ต้นทาง",
+                                     src_options if src_options else visible_sheets,
+                                     key="src_sum")
+        with c2:
+            dst_sheet = st.selectbox("📋 Sheet ปลายทาง (Com ERP)",
+                                     visible_sheets, key="dst_com")
+
+        if st.button("📋 คัดลอก sum(ตัดO2O) → Com ERP", type="primary", key="btn_copy"):
+            with st.spinner("กำลังคัดลอก..."):
+                result = _copy_sum_to_com(ss, src_sheet, dst_sheet)
+            if result["ok"]:
+                st.success(f"✅ {result['msg']}")
+            else:
+                st.error(f"❌ {result['msg']}")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════
+    # ปุ่ม 3: คิดเงินเดือนพนักงาน — Import เวลาเข้า-ออกงาน
+    # ══════════════════════════════════════════════════════════════
+    with st.expander("3️⃣  คิดเงินเดือนพนักงาน (Import เวลาเข้า-ออกงาน)", expanded=False):
+        st.caption("อัปโหลดไฟล์เวลา → ล้างเก่า → สร้างวันที่ → วางเวลา → บันทึกประวัติ")
+
+        sh_pay   = st.selectbox("📋 เลือก Sheet พนักงาน", visible_sheets, key="sh_pay")
+        att_file = st.file_uploader("📂 ไฟล์เวลาเข้า-ออกงาน (.xlsx / .xls)",
+                                    type=["xlsx", "xls"], key="att_file")
+
+        if att_file:
+            att_df = _read_attendance_file(att_file)
+            if att_df is not None and not att_df.empty:
+                auto_month, auto_year = detect_period_from_df(att_df)
+                m_label = f"{MONTH_TH[auto_month]} {auto_year}"
+                st.info(f"📅 พบ **{len(att_df)} วัน** — รอบเดือน {m_label}")
+                st.dataframe(
+                    att_df[["วัน", "วันที่", "เวลาเข้า", "เวลาออก", "หมายเหตุ"]].head(10),
+                    use_container_width=True, hide_index=True
+                )
+
+                save_hist = st.checkbox(
+                    "📚 บันทึกประวัติ (เทมเพลต" +
+                    (" + ฐานข้อมูล" if ss_db else "") + ")",
+                    value=True, key="chk_hist"
+                )
+
+                if st.button("▶ เริ่มคิดเงินเดือน (ล้างเก่า → สร้างวันที่ → วางเวลา)",
+                             type="primary", key="btn_payroll"):
+                    with st.status("⏳ กำลังดำเนินการ...", expanded=True) as status:
+
+                        st.write("🗑 ล้างข้อมูลเดือนเก่า...")
+                        r1 = _clear_attendance(ss, sh_pay)
+                        if not r1["ok"]:
+                            status.update(label="❌ ล้มเหลว", state="error")
+                            st.error(r1["msg"]); st.stop()
+                        st.write(f"✅ {r1['msg']}")
+
+                        st.write(f"📅 สร้างวันที่รอบ {m_label}...")
+                        r2 = _generate_dates(ss, sh_pay, auto_month, auto_year)
+                        if not r2["ok"]:
+                            status.update(label="❌ ล้มเหลว", state="error")
+                            st.error(r2["msg"]); st.stop()
+                        st.write(f"✅ {r2['msg']}")
+
+                        st.write("📥 วางข้อมูลเวลาเข้า-ออก...")
+                        r3 = _import_attendance(ss, sh_pay, att_df.to_dict("records"))
+                        if not r3["ok"]:
+                            status.update(label="❌ ล้มเหลว", state="error")
+                            st.error(r3["msg"]); st.stop()
+                        st.write(f"✅ {r3['msg']}")
+
+                        if save_hist:
+                            st.write("📚 บันทึกประวัติ...")
+                            month_yr = f"{auto_month}/{auto_year}"
+                            r4 = _export_history(ss, sh_pay, month_yr, ss_db)
+                            st.write(f"✅ {r4['msg']}" if r4["ok"] else f"⚠️ {r4['msg']}")
+
+                        status.update(label="✅ เสร็จสิ้น!", state="complete")
+            else:
+                st.warning("⚠️ อ่านไฟล์ไม่ได้ หรือไม่พบข้อมูล")
+
+
+# ── Backend: ERP Import ──────────────────────────────────────────
+
+def _read_erp_file(file) -> pd.DataFrame | None:
+    """อ่านไฟล์ ERP — ลองหลาย header row จนได้ข้อมูล"""
+    try:
+        file.seek(0)
+        for hdr in [0, 1, 12, 13]:
+            try:
+                file.seek(0)
+                df = pd.read_excel(file, header=hdr)
+                df.columns = [str(c).strip() for c in df.columns]
+                df = df.dropna(how="all")
+                if len(df) > 0 and len(df.columns) > 3:
+                    return df
+            except Exception:
+                pass
+        return None
+    except Exception as e:
+        st.warning(f"อ่านไฟล์ ERP ไม่ได้: {e}")
+        return None
+
+
+def _import_erp(ss: gspread.Spreadsheet, sheet_name: str, df: pd.DataFrame) -> dict:
+    """นำเข้าข้อมูล ERP ลง Google Sheet"""
+    try:
+        ws   = ss.worksheet(sheet_name)
+        rows = [df.columns.tolist()] + df.astype(str).values.tolist()
+        ws.clear()
+        ws.update("A1", rows)
+        return {"ok": True, "msg": f"นำเข้า ERP {len(df)} แถว ลงชีต \"{sheet_name}\" เรียบร้อยค่ะ"}
+    except gspread.WorksheetNotFound:
+        return {"ok": False, "msg": f"ไม่พบ sheet: {sheet_name}"}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
+
+
+# ── Backend: Copy sum(ตัดO2O) → Com ERP ─────────────────────────
+
+def _copy_sum_to_com(ss: gspread.Spreadsheet, src_sheet: str, dst_sheet: str) -> dict:
+    """คัดลอกยอดจากชีต sum(ตัดO2O) → คอลัมน์ Com ERP"""
+    try:
+        src = ss.worksheet(src_sheet)
+        dst = ss.worksheet(dst_sheet)
+
+        src_data = src.get_all_values()
+        if len(src_data) < 2:
+            return {"ok": False, "msg": f"ชีต \"{src_sheet}\" ไม่มีข้อมูล"}
+
+        headers  = [str(h).strip() for h in src_data[0]]
+        name_col = next((i for i, h in enumerate(headers)
+                         if any(k in h for k in ["ชื่อ", "พนักงาน", "name"])), 0)
+        com_col  = next((i for i, h in enumerate(headers)
+                         if any(k in h for k in ["คอม", "commission", "ยอด", "รวม"])), 1)
+
+        commission_map: dict[str, str] = {}
+        for row in src_data[1:]:
+            if len(row) > max(name_col, com_col) and str(row[name_col]).strip():
+                commission_map[str(row[name_col]).strip()] = str(row[com_col]).strip()
+
+        if not commission_map:
+            return {"ok": False, "msg": "ไม่พบข้อมูลค่าคอมในชีตต้นทาง"}
+
+        dst_data    = dst.get_all_values()
+        dst_headers = [str(h).strip() for h in dst_data[0]] if dst_data else []
+
+        com_erp_col = next(
+            (i for i, h in enumerate(dst_headers)
+             if "com erp" in h.lower() or "comErp" in h or "ค่าคอมerp" in h.lower()),
+            None
+        )
+        if com_erp_col is None:
+            return {
+                "ok": False,
+                "msg": (f"ไม่พบคอลัมน์ 'Com ERP' ใน \"{dst_sheet}\" "
+                        f"(พบ: {', '.join(dst_headers[:10])})")
+            }
+
+        dst_name_col = next((i for i, h in enumerate(dst_headers)
+                             if any(k in h for k in ["ชื่อ", "พนักงาน", "name"])), 0)
+        updates = []
+        matched = 0
+        for r_i, row in enumerate(dst_data[1:], start=2):
+            name = str(row[dst_name_col]).strip() if len(row) > dst_name_col else ""
+            if name in commission_map:
+                updates.append({"range": f"{col_letter(com_erp_col + 1)}{r_i}",
+                                "values": [[commission_map[name]]]})
+                matched += 1
+
+        if updates:
+            dst.batch_update(updates)
+        return {"ok": True,
+                "msg": f"คัดลอกค่าคอม {matched} คน จาก \"{src_sheet}\" → \"{dst_sheet}\" เรียบร้อยค่ะ"}
+
+    except gspread.WorksheetNotFound as e:
+        return {"ok": False, "msg": f"ไม่พบ sheet: {e}"}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
+
+
+# ── Backend: Attendance & Payroll ────────────────────────────────
+
+def _clear_attendance(ss: gspread.Spreadsheet, sheet_name: str) -> dict:
+    """ล้างข้อมูลเวลาที่กรอกมือ (คงสูตรไว้)"""
+    try:
+        ws       = ss.worksheet(sheet_name)
+        last_col = ws.col_count
+        num_cols = last_col - CFG["FIRST_ATT_COL"] + 1
+        if num_cols <= 0:
+            return {"ok": False, "msg": "ไม่พบข้อมูลในคอลัมน์ M เป็นต้นไป"}
+
+        num_rows = CFG["DATA_END"] - CFG["DATA_START"] + 1
+        start_r  = CFG["DATA_START"]
+        start_c  = CFG["FIRST_ATT_COL"]
+        rng_a1   = f"{col_letter(start_c)}{start_r}:{col_letter(last_col)}{CFG['DATA_END']}"
+
+        formulas = ws.get(rng_a1, value_render_option="FORMULA")
+        values   = ws.get(rng_a1, value_render_option="FORMATTED_VALUE")
+
+        to_clear = []
+        for r_i in range(num_rows):
+            frow = formulas[r_i] if r_i < len(formulas) else []
+            vrow = values[r_i]   if r_i < len(values)   else []
+            for c_i in range(num_cols):
+                f = frow[c_i] if c_i < len(frow) else ""
+                v = vrow[c_i] if c_i < len(vrow) else ""
+                if not str(f).startswith("=") and str(v).strip() not in ("", "None"):
+                    to_clear.append(f"{col_letter(start_c + c_i)}{start_r + r_i}")
+
+        if not to_clear:
+            return {"ok": True, "msg": "ไม่มีข้อมูลที่ต้องล้าง (สะอาดอยู่แล้ว)"}
+        ws.batch_clear(to_clear)
+        return {"ok": True, "msg": f"ล้างแล้ว {len(to_clear)} เซลล์ (สูตรยังอยู่ครบ)"}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
+
+
+def _generate_dates(ss: gspread.Spreadsheet, sheet_name: str,
+                    month: int, year_be: int) -> dict:
+    """สร้างวันที่รอบ 26 เดือนก่อน → 25 เดือนนี้"""
+    try:
+        ws      = ss.worksheet(sheet_name)
+        year_ce = year_be - 543
+
+        prev_month = 12 if month == 1 else month - 1
+        prev_year  = year_ce - 1 if month == 1 else year_ce
+        start = date(prev_year, prev_month, 26)
+        end   = date(year_ce, month, 25)
+
+        days, cur = [], start
+        while cur <= end:
+            days.append(cur)
+            cur += timedelta(days=1)
+
+        headers       = ws.row_values(CFG["HEADER_ROW"])
+        cols          = find_col_indices(headers, CFG["HDR_DATE"], CFG["HDR_DAY_NAME"])
+        date_cols     = cols[CFG["HDR_DATE"]]
+        day_name_cols = cols[CFG["HDR_DAY_NAME"]]
+
+        if not date_cols:
+            return {"ok": False,
+                    "msg": f'ไม่พบคอลัมน์ "{CFG["HDR_DATE"]}" ใน row {CFG["HEADER_ROW"]}'}
+
+        updates  = []
+        num_rows = min(len(days), CFG["DATA_END"] - CFG["DATA_START"] + 1)
+
+        for bi, dc in enumerate(date_cols):
+            dnc = day_name_cols[bi] if bi < len(day_name_cols) else None
+            for i in range(num_rows):
+                row      = CFG["DATA_START"] + i
+                d        = days[i]
+                date_str = d.strftime("%d/%m/") + str(d.year + 543)
+                day_idx  = (d.weekday() + 1) % 7   # 0=อา. 1=จ. ...
+                updates.append({"range": f"{col_letter(dc)}{row}",
+                                "values": [[date_str]]})
+                if dnc:
+                    updates.append({"range": f"{col_letter(dnc)}{row}",
+                                    "values": [[DAY_TH[day_idx]]]})
+            # ล้างแถวที่เกิน
+            for i in range(num_rows, CFG["DATA_END"] - CFG["DATA_START"] + 1):
+                row = CFG["DATA_START"] + i
+                updates.append({"range": f"{col_letter(dc)}{row}", "values": [[""]]})
+                if dnc:
+                    updates.append({"range": f"{col_letter(dnc)}{row}", "values": [[""]]})
+
+        ws.batch_update(updates)
+        return {"ok": True,
+                "msg": f"สร้างวันที่ {num_rows} วัน ใน {len(date_cols)} block เรียบร้อยค่ะ"}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
+
+
+def _read_attendance_file(file) -> pd.DataFrame | None:
+    """อ่านไฟล์เวลาเข้า-ออก → DataFrame (columns: วัน, วันที่, เวลาเข้า, เวลาออก, หมายเหตุ)"""
+    try:
+        file.seek(0)
+        df_raw  = pd.read_excel(file, header=None)
+        hdr_idx = 0
+        for i in range(min(5, len(df_raw))):
+            row_str = "|".join(df_raw.iloc[i].astype(str).tolist())
+            if "วันที่" in row_str or "เวลาเข้างาน" in row_str:
+                hdr_idx = i
+                break
+
+        rows = []
+        for i in range(hdr_idx + 1, len(df_raw)):
+            row      = df_raw.iloc[i]
+            # ตรวจสอบว่ามีข้อมูล index ครบก่อน access
+            max_idx = max(CFG["ATT_DATE"], CFG["ATT_TIME_IN"],
+                          CFG["ATT_TIME_OUT"], CFG["ATT_NOTE"], CFG["ATT_DAY"])
+            if len(row) <= max_idx:
+                continue
+            date_val = row.iloc[CFG["ATT_DATE"]]
+            date_str = norm_date(str(date_val).strip()) if pd.notna(date_val) else None
+            if not date_str:
+                continue
+
+            def safe_str(idx):
+                v = row.iloc[idx]
+                return str(v).strip() if pd.notna(v) else ""
+
+            rows.append({
+                "วัน"     : safe_str(CFG["ATT_DAY"]),
+                "วันที่"  : date_str,
+                "เวลาเข้า": safe_str(CFG["ATT_TIME_IN"]),
+                "เวลาออก" : safe_str(CFG["ATT_TIME_OUT"]),
+                "หมายเหตุ": safe_str(CFG["ATT_NOTE"]),
+            })
+        return pd.DataFrame(rows) if rows else None
+    except Exception as e:
+        st.warning(f"อ่านไฟล์ไม่ได้: {e}")
+        return None
+
+
+def _import_attendance(ss: gspread.Spreadsheet, sheet_name: str,
+                       rows: list) -> dict:
+    """วางข้อมูลเวลาเข้า-ออกลง template (ข้ามเซลล์ที่มีสูตร)"""
+    try:
+        ws      = ss.worksheet(sheet_name)
+        att_map = {r["วันที่"]: r for r in rows if r.get("วันที่")}
+
+        headers   = ws.row_values(CFG["HEADER_ROW"])
+        cols      = find_col_indices(headers,
+                                     CFG["HDR_DATE"], CFG["HDR_TIME_IN"],
+                                     CFG["HDR_TIME_OUT"], CFG["HDR_NOTE"],
+                                     CFG["HDR_DAY_NAME"])
+        date_cols = cols[CFG["HDR_DATE"]]
+        ti_cols   = cols[CFG["HDR_TIME_IN"]]
+        to_cols   = cols[CFG["HDR_TIME_OUT"]]
+        note_cols = cols[CFG["HDR_NOTE"]]
+        day_cols  = cols[CFG["HDR_DAY_NAME"]]
+
+        if not date_cols:
+            return {"ok": False,
+                    "msg": f'ไม่พบคอลัมน์ "{CFG["HDR_DATE"]}" ในเทมเพลต'}
+
+        # ดึง formula ทั้ง block เพื่อตรวจ
+        start_c  = min(date_cols)
+        end_c    = ws.col_count
+        rng      = (f"{col_letter(start_c)}{CFG['DATA_START']}:"
+                    f"{col_letter(end_c)}{CFG['DATA_END']}")
+        formulas = ws.get(rng, value_render_option="FORMULA")
+
+        # สร้าง map วันที่ → row number สำหรับแต่ละ block
+        date_row_map: dict[tuple, int] = {}
+        for bi, dc in enumerate(date_cols):
+            col_data = ws.col_values(dc)
+            for r_i, val in enumerate(col_data[CFG["DATA_START"] - 1: CFG["DATA_END"]]):
+                date_key = norm_date(str(val).strip())
+                if date_key:
+                    date_row_map[(bi, date_key)] = CFG["DATA_START"] + r_i
+
+        def is_formula(c, r_num):
+            if c is None:
+                return True
+            ci        = c - start_c
+            f_row_idx = r_num - CFG["DATA_START"]
+            if f_row_idx >= len(formulas):
+                return False
+            row_f = formulas[f_row_idx]
+            return ci < len(row_f) and str(row_f[ci]).startswith("=")
+
+        updates = []
+        pasted  = 0
+
+        for bi, dc in enumerate(date_cols):
+            ti_col = ti_cols[bi]   if bi < len(ti_cols)   else None
+            to_col = to_cols[bi]   if bi < len(to_cols)   else None
+            nt_col = note_cols[bi] if bi < len(note_cols) else None
+            dn_col = day_cols[bi]  if bi < len(day_cols)  else None
+
+            for key, r_num in date_row_map.items():
+                if key[0] != bi:
+                    continue
+                date_key = key[1]
+                if date_key not in att_map:
+                    continue
+                att = att_map[date_key]
+
+                if ti_col and not is_formula(ti_col, r_num):
+                    updates.append({"range": f"{col_letter(ti_col)}{r_num}",
+                                    "values": [[att["เวลาเข้า"]]]})
+                if to_col and not is_formula(to_col, r_num):
+                    updates.append({"range": f"{col_letter(to_col)}{r_num}",
+                                    "values": [[att["เวลาออก"]]]})
+                if nt_col and not is_formula(nt_col, r_num):
+                    updates.append({"range": f"{col_letter(nt_col)}{r_num}",
+                                    "values": [[att["หมายเหตุ"]]]})
+                if dn_col and not is_formula(dn_col, r_num):
+                    updates.append({"range": f"{col_letter(dn_col)}{r_num}",
+                                    "values": [[att["วัน"]]]})
+                pasted += 1
+
+        if updates:
+            ws.batch_update(updates)
+        return {"ok": True, "msg": f"วางข้อมูล {pasted} วัน เรียบร้อยค่ะ"}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
+
+
+def _export_history(ss: gspread.Spreadsheet, sheet_name: str,
+                    month_yr: str,
+                    ss_db: gspread.Spreadsheet | None = None) -> dict:
+    """บันทึกข้อมูลเวลาลงชีตประวัติ — ทั้งในเทมเพลตและ DB (ถ้ามี)"""
+    try:
+        ws      = ss.worksheet(sheet_name)
+        headers = ws.row_values(CFG["HEADER_ROW"])
+        cols    = find_col_indices(headers,
+                                   CFG["HDR_DATE"], CFG["HDR_TIME_IN"],
+                                   CFG["HDR_TIME_OUT"], CFG["HDR_NOTE"],
+                                   CFG["HDR_DAY_NAME"])
+
+        date_cols = cols[CFG["HDR_DATE"]]
+        if not date_cols:
+            return {"ok": False, "msg": "ไม่พบคอลัมน์วันที่"}
+
+        dc   = date_cols[0]
+        ti_c = cols[CFG["HDR_TIME_IN"]][0]  if cols[CFG["HDR_TIME_IN"]]  else None
+        to_c = cols[CFG["HDR_TIME_OUT"]][0] if cols[CFG["HDR_TIME_OUT"]] else None
+        nt_c = cols[CFG["HDR_NOTE"]][0]     if cols[CFG["HDR_NOTE"]]     else None
+        dn_c = cols[CFG["HDR_DAY_NAME"]][0] if cols[CFG["HDR_DAY_NAME"]] else None
+
+        date_vals = ws.col_values(dc)
+        ti_vals   = ws.col_values(ti_c) if ti_c else []
+        to_vals   = ws.col_values(to_c) if to_c else []
+        nt_vals   = ws.col_values(nt_c) if nt_c else []
+        dn_vals   = ws.col_values(dn_c) if dn_c else []
+
+        now      = date.today().isoformat()
+        new_rows = []
+        for i in range(CFG["DATA_START"] - 1, CFG["DATA_END"]):
+            dv = date_vals[i] if i < len(date_vals) else ""
+            if not str(dv).strip():
+                continue
+            new_rows.append([
+                now, sheet_name, month_yr, str(dv),
+                dn_vals[i] if i < len(dn_vals) else "",
+                ti_vals[i] if i < len(ti_vals) else "",
+                to_vals[i] if i < len(to_vals) else "",
+                nt_vals[i] if i < len(nt_vals) else "",
+            ])
+
+        if not new_rows:
+            return {"ok": False, "msg": "ไม่พบข้อมูลในเทมเพลต"}
+
+        # บันทึกในเทมเพลต
+        hist_tmpl = _get_or_create_history_sheet(ss)
+        hist_tmpl.append_rows(new_rows)
+
+        # บันทึกใน DB ด้วย (ถ้ามี)
+        db_msg = ""
+        if ss_db:
+            try:
+                hist_db = _get_or_create_history_sheet(ss_db)
+                hist_db.append_rows(new_rows)
+                db_msg = " + ฐานข้อมูล"
+            except Exception as e:
+                db_msg = f" (DB ล้มเหลว: {e})"
+
+        return {"ok": True,
+                "msg": (f"บันทึก {len(new_rows)} แถว ลงชีต "
+                        f"\"{CFG['HISTORY_SHEET']}\"{db_msg} เรียบร้อยค่ะ")}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
