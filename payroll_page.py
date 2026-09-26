@@ -227,14 +227,26 @@ def render_payroll_page(gc: gspread.Client,
                                     progress_bar.progress((idx + 1) / len(pairs))
                                     continue
 
-                                r2 = _generate_dates(ss, sh_pay, auto_month, auto_year)
+                                # เปิด ws + headers ครั้งเดียว แล้วส่งต่อให้ทั้ง 2 ฟังก์ชัน (ลด API call)
+                                try:
+                                    shared_ws      = _sheets_retry(ss.worksheet, sh_pay)
+                                    shared_headers = _sheets_retry(shared_ws.row_values, CFG["HEADER_ROW"])
+                                except Exception as e_ws:
+                                    errors.append(f"{sh_pay}: เปิด worksheet ไม่ได้ — {e_ws}")
+                                    fail_count += 1
+                                    progress_bar.progress((idx + 1) / len(pairs))
+                                    continue
+
+                                r2 = _generate_dates(ss, sh_pay, auto_month, auto_year,
+                                                     ws=shared_ws, headers=shared_headers)
                                 if not r2["ok"]:
                                     errors.append(f"{sh_pay}: สร้างวันที่ไม่ได้ — {r2['msg']}")
                                     fail_count += 1
                                     progress_bar.progress((idx + 1) / len(pairs))
                                     continue
 
-                                r3 = _import_attendance(ss, sh_pay, emp_rows)
+                                r3 = _import_attendance(ss, sh_pay, emp_rows,
+                                                        ws=shared_ws, headers=shared_headers)
                                 if not r3["ok"]:
                                     errors.append(f"{sh_pay}: วางเวลาไม่ได้ — {r3['msg']}")
                                     fail_count += 1
@@ -249,7 +261,14 @@ def render_payroll_page(gc: gspread.Client,
 
                         progress_bar.progress((idx + 1) / len(pairs))
                         if idx < len(pairs) - 1:
-                            time.sleep(3)
+                            # cooldown ทุก 10 sheet เพื่อไม่ให้ 429
+                            if (idx + 1) % 10 == 0:
+                                status_text.info(
+                                    f"⏸ พัก 30 วินาที (cooldown หลังครบ {idx+1} Sheet)..."
+                                )
+                                time.sleep(30)
+                            else:
+                                time.sleep(6)
 
                     status_text.empty()
                     if fail_count == 0:
@@ -419,10 +438,13 @@ def _clear_attendance(ss: gspread.Spreadsheet, sheet_name: str) -> dict:
 
 
 def _generate_dates(ss: gspread.Spreadsheet, sheet_name: str,
-                    month: int, year_be: int) -> dict:
-    """สร้างวันที่รอบ 26 เดือนก่อน → 25 เดือนนี้"""
+                    month: int, year_be: int,
+                    ws=None, headers=None) -> dict:
+    """สร้างวันที่รอบ 26 เดือนก่อน → 25 เดือนนี้
+    รับ ws/headers ที่เปิดไว้แล้วจากภายนอกได้ เพื่อลด API call"""
     try:
-        ws      = ss.worksheet(sheet_name)
+        if ws is None:
+            ws = _sheets_retry(ss.worksheet, sheet_name)
         year_ce = year_be - 543
 
         prev_month = 12 if month == 1 else month - 1
@@ -435,7 +457,8 @@ def _generate_dates(ss: gspread.Spreadsheet, sheet_name: str,
             days.append(cur)
             cur += timedelta(days=1)
 
-        headers       = _sheets_retry(ws.row_values, CFG["HEADER_ROW"])
+        if headers is None:
+            headers = _sheets_retry(ws.row_values, CFG["HEADER_ROW"])
         cols          = find_col_indices(headers, CFG["HDR_DATE"], CFG["HDR_DAY_NAME"])
         date_cols     = cols[CFG["HDR_DATE"]]
         day_name_cols = cols[CFG["HDR_DAY_NAME"]]
@@ -527,13 +550,17 @@ def _read_attendance_file(file) -> pd.DataFrame | None:
 
 
 def _import_attendance(ss: gspread.Spreadsheet, sheet_name: str,
-                       rows: list) -> dict:
-    """วางข้อมูลเวลาเข้า-ออกลง template (ข้ามเซลล์ที่มีสูตร)"""
+                       rows: list,
+                       ws=None, headers=None) -> dict:
+    """วางข้อมูลเวลาเข้า-ออกลง template (ข้ามเซลล์ที่มีสูตร)
+    รับ ws/headers ที่เปิดไว้แล้วจากภายนอกได้ เพื่อลด API call"""
     try:
-        ws      = ss.worksheet(sheet_name)
+        if ws is None:
+            ws = _sheets_retry(ss.worksheet, sheet_name)
         att_map = {r["วันที่"]: r for r in rows if r.get("วันที่")}
 
-        headers   = _sheets_retry(ws.row_values, CFG["HEADER_ROW"])
+        if headers is None:
+            headers = _sheets_retry(ws.row_values, CFG["HEADER_ROW"])
         cols      = find_col_indices(headers,
                                      CFG["HDR_DATE"], CFG["HDR_TIME_IN"],
                                      CFG["HDR_TIME_OUT"], CFG["HDR_NOTE"],
