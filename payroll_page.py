@@ -445,8 +445,19 @@ def _generate_dates(ss: gspread.Spreadsheet, sheet_name: str,
         updates  = []
         num_rows = min(len(days), CFG["DATA_END"] - CFG["DATA_START"] + 1)
 
+        DAY_EN_LIST   = ["Su","Mo","Tu","We","Th","Fr","Sa"]
+        COL_DAY_EN_FB = 14   # column N — fallback ถ้าไม่มีหัว "ชื่อวัน"
+
         for bi, dc in enumerate(date_cols):
-            dnc = day_name_cols[bi] if bi < len(day_name_cols) else None
+            # ถ้าหาหัว "ชื่อวัน" ไม่เจอ ให้ใช้ column N (14) สำหรับ block แรก
+            # block ที่สองใช้คอลัมน์ถัดจาก date col ของ block นั้น (ถ้ามี)
+            if bi < len(day_name_cols):
+                dnc = day_name_cols[bi]
+            elif bi == 0:
+                dnc = COL_DAY_EN_FB   # fallback: column N
+            else:
+                dnc = None
+
             for i in range(num_rows):
                 row      = CFG["DATA_START"] + i
                 d        = days[i]
@@ -455,7 +466,6 @@ def _generate_dates(ss: gspread.Spreadsheet, sheet_name: str,
                 updates.append({"range": f"{col_letter(dc)}{row}",
                                 "values": [[date_str]]})
                 if dnc:
-                    DAY_EN_LIST = ["Su","Mo","Tu","We","Th","Fr","Sa"]
                     updates.append({"range": f"{col_letter(dnc)}{row}",
                                     "values": [[DAY_EN_LIST[day_idx]]]})
             # ไม่ clear แถวที่เกิน เพื่อไม่ให้ทับส่วนสรุปด้านล่าง
