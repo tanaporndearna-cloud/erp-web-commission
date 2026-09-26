@@ -574,7 +574,9 @@ def _export_history(ss: gspread.Spreadsheet, sheet_name: str,
     COL_HIST_END   = 25   # Y (1-indexed)
 
     try:
-        NUM_ROWS = 100
+        # copy เฉพาะแถวที่มีข้อมูลจริง (row 1 ถึง DATA_END) ไม่ copy แถวเปล่าด้านล่าง
+        # เพื่อไม่ให้ทับ/ลบ content อื่นในชีต
+        NUM_ROWS = CFG["DATA_END"]      # = 40 (ตาม config)
         width    = COL_HIST_END - COL_HIST_START + 1
 
         ws           = ss.worksheet(sheet_name)
@@ -598,27 +600,42 @@ def _export_history(ss: gspread.Spreadsheet, sheet_name: str,
             ws.resize(rows=max(ws.row_count, NUM_ROWS),
                       cols=paste_end + 10)
 
-        # ── copyPaste ทั้งบล็อก (ค่า + สี + เส้น + รูป) ──────────
-        body = {"requests": [{
-            "copyPaste": {
-                "source": {
-                    "sheetId"        : src_sheet_id,
-                    "startRowIndex"  : 0,
-                    "endRowIndex"    : NUM_ROWS,
-                    "startColumnIndex": COL_HIST_START - 1,   # 0-indexed
-                    "endColumnIndex"  : COL_HIST_END,          # 0-indexed exclusive
-                },
-                "destination": {
-                    "sheetId"        : src_sheet_id,
-                    "startRowIndex"  : 0,
-                    "endRowIndex"    : NUM_ROWS,
-                    "startColumnIndex": paste_start - 1,
-                    "endColumnIndex"  : paste_end - 1,
-                },
-                "pasteType"       : "PASTE_NORMAL",
-                "pasteOrientation": "NORMAL"
-            }
-        }]}
+        src_range = {
+            "sheetId"         : src_sheet_id,
+            "startRowIndex"   : 0,
+            "endRowIndex"     : NUM_ROWS,        # 0-indexed exclusive = row 40
+            "startColumnIndex": COL_HIST_START - 1,   # 0-indexed
+            "endColumnIndex"  : COL_HIST_END,          # 0-indexed exclusive
+        }
+        dst_range = {
+            "sheetId"         : src_sheet_id,
+            "startRowIndex"   : 0,
+            "endRowIndex"     : NUM_ROWS,
+            "startColumnIndex": paste_start - 1,
+            "endColumnIndex"  : paste_end - 1,
+        }
+
+        # ── 2 requests: copy format ก่อน แล้ว copy values (ไม่มีสูตร) ──
+        body = {"requests": [
+            # 1) copy สี + เส้นขอบ + formatting ทั้งหมด
+            {
+                "copyPaste": {
+                    "source"         : src_range,
+                    "destination"    : dst_range,
+                    "pasteType"      : "PASTE_FORMAT",
+                    "pasteOrientation": "NORMAL"
+                }
+            },
+            # 2) copy ค่า (values only — ไม่มีสูตร) ทับลงบน format ที่วางไว้แล้ว
+            {
+                "copyPaste": {
+                    "source"         : src_range,
+                    "destination"    : dst_range,
+                    "pasteType"      : "PASTE_VALUES",
+                    "pasteOrientation": "NORMAL"
+                }
+            },
+        ]}
         ss.batch_update(body)
 
         return {"ok": True,
