@@ -173,16 +173,9 @@ def render_payroll_page(gc: gspread.Client,
             if att_df is not None and not att_df.empty:
                 auto_month, auto_year = detect_period_from_df(att_df)
                 m_label = f"{MONTH_TH[auto_month]} {auto_year}"
-                st.info(f"📅 พบ **{len(att_df)} วัน** — รอบเดือน {m_label}")
-                st.dataframe(
-                    att_df[["วัน", "วันที่", "เวลาเข้า", "เวลาออก", "หมายเหตุ"]].head(10),
-                    use_container_width=True, hide_index=True
-                )
-
                 # Auto-detect employee sheets — ยกเว้น history sheet
                 EXCLUDE_SHEETS = {CFG["HISTORY_SHEET"]}
                 emp_sheets = [s for s in visible_sheets if s not in EXCLUDE_SHEETS]
-                st.info(f"🗂 พบ **{len(emp_sheets)} Sheet** พนักงานที่จะประมวลผล")
 
                 save_hist = st.checkbox(
                     "📚 บันทึกประวัติ (เทมเพลต" +
