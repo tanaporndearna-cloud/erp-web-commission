@@ -45,6 +45,7 @@ CFG = {
     "HDR_DAY_NAME" : "ชื่อวัน",
 
     # คอลัมน์ในไฟล์เวลาเข้า-ออก (0-indexed) — ปรับตามไฟล์จริงถ้าจำเป็น
+    "ATT_EMP_ID"  : 1,   # รหัสพนักงาน
     "ATT_DAY"     : 0,   # ชื่อวัน
     "ATT_DATE"    : 5,   # วันที่
     "ATT_TIME_IN" : 6,   # เวลาเข้างาน
@@ -172,10 +173,28 @@ def render_payroll_page(gc: gspread.Client,
             att_df = _read_attendance_file(att_file)
             if att_df is not None and not att_df.empty:
                 auto_month, auto_year = detect_period_from_df(att_df)
-                m_label = f"{MONTH_TH[auto_month]} {auto_year}"
-                # Auto-detect employee sheets — ยกเว้น history sheet
+
+                # จับคู่ sheet กับรหัสพนักงาน
+                # ชื่อ sheet รูปแบบ "99043_ณี" → prefix ก่อน "_" คือรหัสพนักงาน
                 EXCLUDE_SHEETS = {CFG["HISTORY_SHEET"]}
-                emp_sheets = [s for s in visible_sheets if s not in EXCLUDE_SHEETS]
+                emp_ids_in_file = att_df["รหัสพนักงาน"].dropna().unique().tolist()
+                emp_ids_in_file = [str(e) for e in emp_ids_in_file if str(e).strip()]
+
+                # สร้าง map: รหัสพนักงาน → ชื่อ sheet
+                id_to_sheet = {}
+                for sh in visible_sheets:
+                    if sh in EXCLUDE_SHEETS:
+                        continue
+                    prefix = sh.split("_")[0].strip()
+                    if prefix in emp_ids_in_file:
+                        id_to_sheet[prefix] = sh
+
+                # แจ้งถ้ามีรหัสในไฟล์ที่ไม่มี sheet
+                missing = [e for e in emp_ids_in_file if e not in id_to_sheet]
+                if missing:
+                    st.warning(f"⚠️ ไม่พบ Sheet สำหรับรหัส: {', '.join(missing)} — จะข้ามค่ะ")
+
+                matched_pairs = list(id_to_sheet.items())   # [(emp_id, sheet_name), ...]
 
                 save_hist = st.checkbox(
                     "📚 บันทึกประวัติ (เทมเพลต" +
@@ -192,17 +211,20 @@ def render_payroll_page(gc: gspread.Client,
                     progress_bar  = st.progress(0)
                     status_text   = st.empty()
 
-                    for idx, sh_pay in enumerate(emp_sheets):
+                    for idx, (emp_id, sh_pay) in enumerate(matched_pairs):
                         status_text.info(
-                            f"⏳ กำลังประมวลผล Sheet **{sh_pay}** ({idx+1}/{len(emp_sheets)})..."
+                            f"⏳ กำลังประมวลผล Sheet **{sh_pay}** ({idx+1}/{len(matched_pairs)})..."
                         )
                         try:
+                            # กรองเฉพาะข้อมูลของพนักงานคนนี้
+                            emp_rows = att_df[att_df["รหัสพนักงาน"] == emp_id].to_dict("records")
+
                             # Step 1: ล้างข้อมูลเดือนเก่า
                             r1 = _clear_attendance(ss, sh_pay)
                             if not r1["ok"]:
                                 errors.append(f"{sh_pay}: ล้างไม่ได้ — {r1['msg']}")
                                 fail_count += 1
-                                progress_bar.progress((idx + 1) / len(emp_sheets))
+                                progress_bar.progress((idx + 1) / len(matched_pairs))
                                 continue
 
                             # Step 2: สร้างวันที่
@@ -210,15 +232,15 @@ def render_payroll_page(gc: gspread.Client,
                             if not r2["ok"]:
                                 errors.append(f"{sh_pay}: สร้างวันที่ไม่ได้ — {r2['msg']}")
                                 fail_count += 1
-                                progress_bar.progress((idx + 1) / len(emp_sheets))
+                                progress_bar.progress((idx + 1) / len(matched_pairs))
                                 continue
 
-                            # Step 3: วางข้อมูลเวลา
-                            r3 = _import_attendance(ss, sh_pay, att_df.to_dict("records"))
+                            # Step 3: วางข้อมูลเวลาเฉพาะของพนักงานคนนี้
+                            r3 = _import_attendance(ss, sh_pay, emp_rows)
                             if not r3["ok"]:
                                 errors.append(f"{sh_pay}: วางเวลาไม่ได้ — {r3['msg']}")
                                 fail_count += 1
-                                progress_bar.progress((idx + 1) / len(emp_sheets))
+                                progress_bar.progress((idx + 1) / len(matched_pairs))
                                 continue
 
                             # Step 4: บันทึกประวัติ
@@ -234,7 +256,7 @@ def render_payroll_page(gc: gspread.Client,
                             errors.append(f"{sh_pay}: ข้อผิดพลาด — {str(e)}")
                             fail_count += 1
 
-                        progress_bar.progress((idx + 1) / len(emp_sheets))
+                        progress_bar.progress((idx + 1) / len(matched_pairs))
 
                     # สรุปผล
                     status_text.empty()
@@ -446,7 +468,9 @@ def _generate_dates(ss: gspread.Spreadsheet, sheet_name: str,
 
 
 def _read_attendance_file(file) -> pd.DataFrame | None:
-    """อ่านไฟล์เวลาเข้า-ออก → DataFrame (columns: วัน, วันที่, เวลาเข้า, เวลาออก, หมายเหตุ)"""
+    """อ่านไฟล์เวลาเข้า-ออก → DataFrame
+    columns: รหัสพนักงาน, วัน, วันที่, เวลาเข้า, เวลาออก, หมายเหตุ
+    รองรับไฟล์ที่มีพนักงานหลายคนรวมในชีตเดียว"""
     try:
         file.seek(0)
         df_raw  = pd.read_excel(file, header=None)
@@ -459,9 +483,8 @@ def _read_attendance_file(file) -> pd.DataFrame | None:
 
         rows = []
         for i in range(hdr_idx + 1, len(df_raw)):
-            row      = df_raw.iloc[i]
-            # ตรวจสอบว่ามีข้อมูล index ครบก่อน access
-            max_idx = max(CFG["ATT_DATE"], CFG["ATT_TIME_IN"],
+            row     = df_raw.iloc[i]
+            max_idx = max(CFG["ATT_EMP_ID"], CFG["ATT_DATE"], CFG["ATT_TIME_IN"],
                           CFG["ATT_TIME_OUT"], CFG["ATT_NOTE"], CFG["ATT_DAY"])
             if len(row) <= max_idx:
                 continue
@@ -474,12 +497,16 @@ def _read_attendance_file(file) -> pd.DataFrame | None:
                 v = row.iloc[idx]
                 return str(v).strip() if pd.notna(v) else ""
 
+            emp_id_raw = row.iloc[CFG["ATT_EMP_ID"]]
+            emp_id = str(int(emp_id_raw)) if pd.notna(emp_id_raw) else ""
+
             rows.append({
-                "วัน"     : safe_str(CFG["ATT_DAY"]),
-                "วันที่"  : date_str,
-                "เวลาเข้า": safe_str(CFG["ATT_TIME_IN"]),
-                "เวลาออก" : safe_str(CFG["ATT_TIME_OUT"]),
-                "หมายเหตุ": safe_str(CFG["ATT_NOTE"]),
+                "รหัสพนักงาน": emp_id,
+                "วัน"         : safe_str(CFG["ATT_DAY"]),
+                "วันที่"      : date_str,
+                "เวลาเข้า"    : safe_str(CFG["ATT_TIME_IN"]),
+                "เวลาออก"     : safe_str(CFG["ATT_TIME_OUT"]),
+                "หมายเหตุ"    : safe_str(CFG["ATT_NOTE"]),
             })
         return pd.DataFrame(rows) if rows else None
     except Exception as e:
