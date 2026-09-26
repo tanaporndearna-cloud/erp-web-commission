@@ -572,33 +572,17 @@ def _export_history(ss: gspread.Spreadsheet, sheet_name: str,
     """
     COL_HIST_START = 13   # M (1-indexed)
     COL_HIST_END   = 25   # Y (1-indexed)
-    TEMPLATE_END   = 25   # Y — จบเทมเพลตหลัก (ไม่วางทับ A–Y)
 
     try:
-        ws = ss.worksheet(sheet_name)
+        NUM_ROWS = 100
+        width    = COL_HIST_END - COL_HIST_START + 1
 
-        # ── อ่านข้อมูล M–Y ทุกแถว (แถว 1 ถึง DATA_END) ──────────
-        num_rows = CFG["DATA_END"]
-        range_str = (f"{col_letter(COL_HIST_START)}1:"
-                     f"{col_letter(COL_HIST_END)}{num_rows}")
-        block = ws.get(range_str)   # list of rows (list of str)
+        ws           = ss.worksheet(sheet_name)
+        src_sheet_id = ws.id
 
-        # pad แถวสั้น ให้ครบ 13 คอลัมน์
-        width = COL_HIST_END - COL_HIST_START + 1
-        padded = []
-        for row in block:
-            r = list(row) + [""] * (width - len(row))
-            padded.append(r[:width])
-        # เติมแถวว่างถ้าข้อมูลน้อยกว่า num_rows
-        while len(padded) < num_rows:
-            padded.append([""] * width)
-
-        if not any(any(c for c in r) for r in padded):
-            return {"ok": False, "msg": "ไม่พบข้อมูลในช่วง M–Y"}
-
-        # ── หา last used column ในชีต ────────────────────────────
+        # ── หา last used column ────────────────────────────────────
         all_vals = ws.get_all_values()
-        last_col = TEMPLATE_END  # อย่างน้อยสุด = Y (col 25)
+        last_col = COL_HIST_END
         for row in all_vals:
             for ci in range(len(row) - 1, -1, -1):
                 if row[ci].strip():
@@ -606,29 +590,39 @@ def _export_history(ss: gspread.Spreadsheet, sheet_name: str,
                         last_col = ci + 1
                     break
 
-        # วางที่ last_col + 2 (เว้น 1 คอลัมน์)
-        paste_start = last_col + 2
-        paste_end   = paste_start + width - 1
+        paste_start = last_col + 2          # เว้น 1 คอลัมน์
+        paste_end   = paste_start + width   # exclusive
 
         # ── ขยาย Sheet ถ้าจำเป็น ──────────────────────────────────
         if paste_end > ws.col_count:
-            ws.resize(rows=ws.row_count, cols=paste_end + 10)
+            ws.resize(rows=max(ws.row_count, NUM_ROWS),
+                      cols=paste_end + 10)
 
-        # ── เขียนลง Sheet ─────────────────────────────────────────
-        updates = []
-        for ri, row in enumerate(padded, start=1):
-            for ci, val in enumerate(row):
-                col_num = paste_start + ci
-                updates.append({
-                    "range": f"{col_letter(col_num)}{ri}",
-                    "values": [[val]]
-                })
-
-        # batch update ทีเดียว
-        ws.batch_update(updates)
+        # ── copyPaste ทั้งบล็อก (ค่า + สี + เส้น + รูป) ──────────
+        body = {"requests": [{
+            "copyPaste": {
+                "source": {
+                    "sheetId"        : src_sheet_id,
+                    "startRowIndex"  : 0,
+                    "endRowIndex"    : NUM_ROWS,
+                    "startColumnIndex": COL_HIST_START - 1,   # 0-indexed
+                    "endColumnIndex"  : COL_HIST_END,          # 0-indexed exclusive
+                },
+                "destination": {
+                    "sheetId"        : src_sheet_id,
+                    "startRowIndex"  : 0,
+                    "endRowIndex"    : NUM_ROWS,
+                    "startColumnIndex": paste_start - 1,
+                    "endColumnIndex"  : paste_end - 1,
+                },
+                "pasteType"       : "PASTE_NORMAL",
+                "pasteOrientation": "NORMAL"
+            }
+        }]}
+        ss.batch_update(body)
 
         return {"ok": True,
-                "msg": (f"บันทึกประวัติ {month_yr} ลงชีต \"{sheet_name}\" "
-                        f"ที่คอลัมน์ {col_letter(paste_start)} เรียบร้อยค่ะ")}
+                "msg": (f"บันทึกประวัติ {month_yr} ที่คอลัมน์ "
+                        f"{col_letter(paste_start)} ในชีต \"{sheet_name}\" เรียบร้อยค่ะ")}
     except Exception as e:
         return {"ok": False, "msg": str(e)}
