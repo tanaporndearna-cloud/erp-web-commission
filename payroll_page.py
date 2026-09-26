@@ -203,9 +203,8 @@ def render_payroll_page(gc: gspread.Client,
     # ปุ่ม 3: คิดเงินเดือนพนักงาน — Import เวลาเข้า-ออกงาน
     # ══════════════════════════════════════════════════════════════
     with st.expander("3️⃣  คิดเงินเดือนพนักงาน (Import เวลาเข้า-ออกงาน)", expanded=False):
-        st.caption("อัปโหลดไฟล์เวลา → ล้างเก่า → สร้างวันที่ → วางเวลา → บันทึกประวัติ")
+        st.caption("อัปโหลดไฟล์เวลา → ล้างเก่า → สร้างวันที่ → วางเวลา → บันทึกประวัติ (ประมวลผลทุก Sheet พนักงานอัตโนมัติ)")
 
-        sh_pay   = st.selectbox("📋 เลือก Sheet พนักงาน", visible_sheets, key="sh_pay")
         att_file = st.file_uploader("📂 ไฟล์เวลาเข้า-ออกงาน (.xlsx / .xls)",
                                     type=["xlsx", "xls"], key="att_file")
 
@@ -220,44 +219,82 @@ def render_payroll_page(gc: gspread.Client,
                     use_container_width=True, hide_index=True
                 )
 
+                # Auto-detect employee sheets — ยกเว้น history sheet
+                EXCLUDE_SHEETS = {CFG["HISTORY_SHEET"]}
+                emp_sheets = [s for s in visible_sheets if s not in EXCLUDE_SHEETS]
+                st.info(f"🗂 พบ **{len(emp_sheets)} Sheet** พนักงานที่จะประมวลผล")
+
                 save_hist = st.checkbox(
                     "📚 บันทึกประวัติ (เทมเพลต" +
                     (" + ฐานข้อมูล" if ss_db else "") + ")",
                     value=True, key="chk_hist"
                 )
 
-                if st.button("▶ เริ่มคิดเงินเดือน (ล้างเก่า → สร้างวันที่ → วางเวลา)",
+                if st.button("▶ เริ่มคิดเงินเดือนทุก Sheet พนักงาน (ล้างเก่า → สร้างวันที่ → วางเวลา)",
                              type="primary", key="btn_payroll"):
-                    with st.status("⏳ กำลังดำเนินการ...", expanded=True) as status:
 
-                        st.write("🗑 ล้างข้อมูลเดือนเก่า...")
-                        r1 = _clear_attendance(ss, sh_pay)
-                        if not r1["ok"]:
-                            status.update(label="❌ ล้มเหลว", state="error")
-                            st.error(r1["msg"]); st.stop()
-                        st.write(f"✅ {r1['msg']}")
+                    success_count = 0
+                    fail_count    = 0
+                    errors        = []
+                    progress_bar  = st.progress(0)
+                    status_text   = st.empty()
 
-                        st.write(f"📅 สร้างวันที่รอบ {m_label}...")
-                        r2 = _generate_dates(ss, sh_pay, auto_month, auto_year)
-                        if not r2["ok"]:
-                            status.update(label="❌ ล้มเหลว", state="error")
-                            st.error(r2["msg"]); st.stop()
-                        st.write(f"✅ {r2['msg']}")
+                    for idx, sh_pay in enumerate(emp_sheets):
+                        status_text.info(
+                            f"⏳ กำลังประมวลผล Sheet **{sh_pay}** ({idx+1}/{len(emp_sheets)})..."
+                        )
+                        try:
+                            # Step 1: ล้างข้อมูลเดือนเก่า
+                            r1 = _clear_attendance(ss, sh_pay)
+                            if not r1["ok"]:
+                                errors.append(f"{sh_pay}: ล้างไม่ได้ — {r1['msg']}")
+                                fail_count += 1
+                                progress_bar.progress((idx + 1) / len(emp_sheets))
+                                continue
 
-                        st.write("📥 วางข้อมูลเวลาเข้า-ออก...")
-                        r3 = _import_attendance(ss, sh_pay, att_df.to_dict("records"))
-                        if not r3["ok"]:
-                            status.update(label="❌ ล้มเหลว", state="error")
-                            st.error(r3["msg"]); st.stop()
-                        st.write(f"✅ {r3['msg']}")
+                            # Step 2: สร้างวันที่
+                            r2 = _generate_dates(ss, sh_pay, auto_month, auto_year)
+                            if not r2["ok"]:
+                                errors.append(f"{sh_pay}: สร้างวันที่ไม่ได้ — {r2['msg']}")
+                                fail_count += 1
+                                progress_bar.progress((idx + 1) / len(emp_sheets))
+                                continue
 
-                        if save_hist:
-                            st.write("📚 บันทึกประวัติ...")
-                            month_yr = f"{auto_month}/{auto_year}"
-                            r4 = _export_history(ss, sh_pay, month_yr, ss_db)
-                            st.write(f"✅ {r4['msg']}" if r4["ok"] else f"⚠️ {r4['msg']}")
+                            # Step 3: วางข้อมูลเวลา
+                            r3 = _import_attendance(ss, sh_pay, att_df.to_dict("records"))
+                            if not r3["ok"]:
+                                errors.append(f"{sh_pay}: วางเวลาไม่ได้ — {r3['msg']}")
+                                fail_count += 1
+                                progress_bar.progress((idx + 1) / len(emp_sheets))
+                                continue
 
-                        status.update(label="✅ เสร็จสิ้น!", state="complete")
+                            # Step 4: บันทึกประวัติ
+                            if save_hist:
+                                month_yr = f"{auto_month}/{auto_year}"
+                                r4 = _export_history(ss, sh_pay, month_yr, ss_db)
+                                if not r4["ok"]:
+                                    errors.append(f"{sh_pay}: บันทึกประวัติไม่ได้ — {r4['msg']}")
+
+                            success_count += 1
+
+                        except Exception as e:
+                            errors.append(f"{sh_pay}: ข้อผิดพลาด — {str(e)}")
+                            fail_count += 1
+
+                        progress_bar.progress((idx + 1) / len(emp_sheets))
+
+                    # สรุปผล
+                    status_text.empty()
+                    if fail_count == 0:
+                        st.success(f"✅ เสร็จสิ้น! ประมวลผลครบ {success_count} Sheet ค่ะ")
+                    else:
+                        st.warning(
+                            f"⚠️ เสร็จ {success_count} Sheet / ล้มเหลว {fail_count} Sheet"
+                        )
+                    if errors:
+                        with st.expander("❌ รายการที่มีปัญหา"):
+                            for err in errors:
+                                st.text(err)
             else:
                 st.warning("⚠️ อ่านไฟล์ไม่ได้ หรือไม่พบข้อมูล")
 
