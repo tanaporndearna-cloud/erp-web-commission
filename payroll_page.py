@@ -61,6 +61,9 @@ HISTORY_COLS = ["บันทึกเมื่อ", "Sheet", "เดือน/�
 DAY_TH   = ["อา.", "จ.", "อ.", "พ.", "พฤ.", "ศ.", "ส."]
 MONTH_TH = ["", "ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
              "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
+MONTH_TH_FULL = ["", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน",
+                  "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม",
+                  "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
 
 
 # ── Helpers ─────────────────────────────────────────────────────
@@ -494,6 +497,23 @@ def _generate_dates(ss: gspread.Spreadsheet, sheet_name: str,
                     updates.append({"range": f"{col_letter(dnc)}{row}",
                                     "values": [[DAY_EN_LIST[day_idx]]]})
             # ไม่ clear แถวที่เกิน เพื่อไม่ให้ทับส่วนสรุปด้านล่าง
+
+        # ── อัปเดตเซลล์ "ประจำเดือน" (ค้นหาใน 10 แถวแรก) ──────────────
+        month_label = f"{MONTH_TH_FULL[month]} {year_be}"
+        try:
+            top_rows = _sheets_retry(ws.get, "A1:Z10", value_render_option="FORMATTED_VALUE")
+            for r_i, row_vals in enumerate(top_rows):
+                for c_i, cell_val in enumerate(row_vals):
+                    if "ประจำเดือน" in str(cell_val):
+                        # เขียนค่าในเซลล์ถัดไป (คอลัมน์ P = 16 หรือคอลัมน์ c_i+2)
+                        target_col = max(c_i + 2, 16)   # อย่างน้อยคอลัมน์ P
+                        updates.append({
+                            "range": f"{col_letter(target_col)}{r_i + 1}",
+                            "values": [[month_label]]
+                        })
+                        break
+        except Exception:
+            pass   # ถ้าหาไม่เจอก็ข้ามไป ไม่ให้ error หลัก
 
         _sheets_retry(ws.batch_update, updates)
         return {"ok": True,
