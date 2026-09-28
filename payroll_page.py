@@ -688,14 +688,15 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss):
                         })
 
             # ── map วันที่ → row ────────────────────────────────
+            # ใช้ days[] ที่คำนวณแล้ว (ไม่ใช่ค่าเก่าใน sheet)
+            # เพื่อให้ match กับข้อมูลเวลาของเดือนปัจจุบันได้ถูกต้อง
             date_row_map: dict[tuple, int] = {}
             for bi, dc in enumerate(date_cols):
-                for r_i in range(num_rows):
-                    row_1idx = CFG["DATA_START"] + r_i
-                    val      = dat_val(dc, row_1idx)
-                    date_key = norm_date(str(val).strip())
-                    if date_key:
-                        date_row_map[(bi, date_key)] = row_1idx
+                for j in range(num_rows):
+                    row_1idx = CFG["DATA_START"] + j
+                    d        = days[j]
+                    date_key = d.strftime("%d/%m/") + str(d.year + 543)
+                    date_row_map[(bi, date_key)] = row_1idx
 
             # ── เวลาเข้า-ออก ────────────────────────────────────
             att_rows = att_df[att_df["รหัสพนักงาน"] == eid].to_dict("records")
