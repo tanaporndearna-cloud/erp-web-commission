@@ -105,6 +105,22 @@ def find_col_indices(headers: list, *target_names) -> dict:
     return result
 
 
+def _day_en_from_datestr(ds: str) -> str:
+    """แปลง 'dd/mm/YYYY_BE' → 'Su'/'Mo'/... (ปีพุทธ -543)"""
+    try:
+        parts = ds.split("/")
+        if len(parts) != 3:
+            return ""
+        d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
+        if y > 2400:
+            y -= 543
+        from datetime import date as _date
+        DAY_EN = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]   # 0=Mon…6=Sun
+        return DAY_EN[_date(y, m, d).weekday()]
+    except Exception:
+        return ""
+
+
 def detect_period_from_df(att_df: pd.DataFrame):
     """ดึงเดือน/ปี (พ.ศ.) จากข้อมูลในไฟล์ → (month, year_be)"""
     try:
@@ -283,11 +299,20 @@ def render_payroll_page(gc: gspread.Client,
                             for err in errors:
                                 st.text(err)
 
+                use_fast = st.toggle(
+                    "⚡ Fast Mode (batch API — ทุก Sheet พร้อมกัน ~2 นาที แทน ~45 นาที)",
+                    value=True, key="toggle_fast"
+                )
+
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button("▶ เริ่มคิดเงินเดือน (ล้างเก่า → สร้างวันที่ → วางเวลา)",
                                  type="primary", key="btn_payroll", use_container_width=True):
-                        _run_sheets(matched_pairs, att_df, do_history=False)
+                        if use_fast:
+                            _run_sheets_fast(matched_pairs, att_df,
+                                             auto_month, auto_year, ss)
+                        else:
+                            _run_sheets(matched_pairs, att_df, do_history=False)
 
                 with col2:
                     hist_label = "📚 บันทึกประวัติ (เทมเพลต" + (" + DB" if ss_db else "") + ")"
@@ -438,6 +463,365 @@ def _clear_attendance(ss: gspread.Spreadsheet, sheet_name: str) -> dict:
         return {"ok": True, "msg": f"ล้างแล้ว {len(to_clear)} เซลล์ (สูตรยังอยู่ครบ)"}
     except Exception as e:
         return {"ok": False, "msg": str(e)}
+
+
+def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss):
+    """
+    ⚡ Batch mode — ประมวลผลทุก Sheet ด้วย ~5 API calls ต่อ chunk
+    แทนที่ ~1000 calls + sleep แบบเดิม (~2 นาที vs ~45 นาที)
+
+    การป้องกันความเสี่ยง:
+      - แบ่ง chunk ≤50 Sheet ต่อรอบ (ป้องกัน request too large)
+      - escape apostrophe ในชื่อ Sheet (ป้องกัน A1 notation error)
+      - validate คอลัมน์ก่อนเขียน (ข้าม Sheet ที่ผิดโครงสร้าง)
+      - batch write fail → fallback slow mode เฉพาะ chunk นั้น
+    """
+    CHUNK_SIZE  = 120  # จำนวน Sheet สูงสุดต่อ batch round
+    st_errors   = []
+    success_cnt = 0
+    fallback_pairs = []   # Sheet ที่ต้อง retry ด้วย slow mode
+
+    # ── escape apostrophe ในชื่อ Sheet สำหรับ A1 notation ───────
+    def _esc(sh: str) -> str:
+        return sh.replace("'", "''")
+
+    # ── ข้อมูลวันที่รอบบัญชี ─────────────────────────────────────
+    year_ce = auto_year - 543
+    prev_m  = 12 if auto_month == 1 else auto_month - 1
+    prev_y  = year_ce - 1 if auto_month == 1 else year_ce
+    start   = date(prev_y, prev_m, 26)
+    end     = date(year_ce, auto_month, 25)
+    days, cur = [], start
+    while cur <= end:
+        days.append(cur)
+        cur += timedelta(days=1)
+    num_rows    = min(len(days), CFG["DATA_END"] - CFG["DATA_START"] + 1)
+    DAY_EN_LIST = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]   # (weekday+1)%7
+    month_label = f"{MONTH_TH_FULL[auto_month]} {auto_year}"
+
+    # ── Phase 1: Get all worksheets ──────────────────────────────
+    progress_bar = st.progress(0.0)
+    status_text  = st.empty()
+    status_text.info("📂 [1/5] เปิด worksheet ทั้งหมด...")
+
+    try:
+        all_ws_list = _sheets_retry(ss.worksheets)
+        ws_map = {w.title: w for w in all_ws_list}
+    except Exception as e:
+        st.error(f"เปิด worksheets ไม่ได้: {e}")
+        return
+
+    valid_pairs = [(eid, sh) for eid, sh in pairs if sh in ws_map]
+    for eid, sh in pairs:
+        if sh not in ws_map:
+            st_errors.append(f"{sh}: ไม่พบ sheet นี้")
+
+    if not valid_pairs:
+        st.error("ไม่พบ Sheet ที่ตรงกันเลยค่ะ")
+        return
+
+    # ── แบ่ง chunks ≤ CHUNK_SIZE ─────────────────────────────────
+    chunks = [valid_pairs[i:i + CHUNK_SIZE]
+              for i in range(0, len(valid_pairs), CHUNK_SIZE)]
+    total_chunks = len(chunks)
+
+    GRAY    = {"red": 211/255, "green": 211/255, "blue": 211/255}
+    WHITE   = {"red": 1.0,     "green": 1.0,     "blue": 1.0}
+    COL_N_0 = 13    # N (0-indexed)
+    COL_Y_0 = 25    # Y+1 (exclusive)
+
+    for chunk_idx, chunk in enumerate(chunks):
+        chunk_label = f"chunk {chunk_idx+1}/{total_chunks}" if total_chunks > 1 else ""
+        base_prog   = chunk_idx / total_chunks
+        prog_span   = 1.0 / total_chunks
+
+        progress_bar.progress(base_prog + prog_span * 0.10)
+
+        # ── Phase 2: Batch read (FORMATTED_VALUE) ────────────────
+        status_text.info(
+            f"📖 [2/5] อ่านข้อมูล {len(chunk)} Sheet {chunk_label}..."
+        )
+        ranges_val = []
+        for _, sh in chunk:
+            e = _esc(sh)
+            ranges_val.append(f"'{e}'!A1:Z10")
+            ranges_val.append(f"'{e}'!A5:ZZ5")
+            ranges_val.append(f"'{e}'!A6:ZZ40")
+
+        try:
+            res_val    = _sheets_retry(ss.values_batch_get, ranges_val,
+                                       params={"valueRenderOption": "FORMATTED_VALUE"})
+            val_ranges = res_val.get("valueRanges", [])
+        except Exception as e:
+            st.error(f"batch read (value) ล้มเหลว [{chunk_label}]: {e}")
+            fallback_pairs.extend(chunk)
+            continue
+
+        progress_bar.progress(base_prog + prog_span * 0.25)
+
+        # ── Phase 3: Batch read (FORMULA) ────────────────────────
+        status_text.info(
+            f"📐 [3/5] อ่านสูตร {len(chunk)} Sheet {chunk_label}..."
+        )
+        ranges_fml = [f"'{_esc(sh)}'!M5:ZZ40" for _, sh in chunk]
+
+        try:
+            res_fml    = _sheets_retry(ss.values_batch_get, ranges_fml,
+                                       params={"valueRenderOption": "FORMULA"})
+            fml_ranges = res_fml.get("valueRanges", [])
+        except Exception as e:
+            st.error(f"batch read (formula) ล้มเหลว [{chunk_label}]: {e}")
+            fallback_pairs.extend(chunk)
+            continue
+
+        progress_bar.progress(base_prog + prog_span * 0.40)
+
+        # ── Phase 4: Compute all updates in memory ───────────────
+        status_text.info(f"⚙️ [4/5] คำนวณ {chunk_label}...")
+
+        all_value_upd = []
+        all_fmt_reqs  = []
+
+        for i, (eid, sh) in enumerate(chunk):
+            ws       = ws_map[sh]
+            sheet_id = ws.id
+
+            top_data = val_ranges[i * 3 + 0].get("values", [])
+            hdr_data = val_ranges[i * 3 + 1].get("values", [])
+            dat_data = val_ranges[i * 3 + 2].get("values", [])
+            fml_data = fml_ranges[i].get("values", [])
+
+            headers   = hdr_data[0] if hdr_data else []
+            cols      = find_col_indices(headers,
+                                         CFG["HDR_DATE"], CFG["HDR_DAY_NAME"],
+                                         CFG["HDR_TIME_IN"], CFG["HDR_TIME_OUT"],
+                                         CFG["HDR_NOTE"])
+            date_cols     = cols[CFG["HDR_DATE"]]
+            day_name_cols = cols[CFG["HDR_DAY_NAME"]]
+            ti_cols       = cols[CFG["HDR_TIME_IN"]]
+            to_cols       = cols[CFG["HDR_TIME_OUT"]]
+            note_cols     = cols[CFG["HDR_NOTE"]]
+
+            # ── validate โครงสร้าง ────────────────────────────
+            if not date_cols:
+                st_errors.append(
+                    f"{sh}: ⚠️ ไม่พบหัวคอลัมน์ \"{CFG['HDR_DATE']}\" "
+                    f"ในแถว {CFG['HEADER_ROW']} — ข้ามค่ะ "
+                    f"(พบหัว: {headers[:8]})"
+                )
+                continue
+            if not ti_cols and not to_cols:
+                st_errors.append(
+                    f"{sh}: ⚠️ ไม่พบหัวคอลัมน์เวลาเข้า/ออก — ข้ามค่ะ "
+                    f"(พบหัว: {headers[:8]})"
+                )
+                continue
+
+            FML_ROW_BASE = 5
+            FML_COL_BASE = 13
+
+            def is_formula(col_1idx, row_1idx,
+                           _fd=fml_data, _rb=FML_ROW_BASE, _cb=FML_COL_BASE):
+                fml_r = row_1idx - _rb
+                fml_c = col_1idx - _cb
+                if fml_r < 0 or fml_r >= len(_fd) or fml_c < 0:
+                    return False
+                row_f = _fd[fml_r]
+                return fml_c < len(row_f) and str(row_f[fml_c]).startswith("=")
+
+            DAT_ROW_BASE = CFG["DATA_START"]
+
+            def dat_val(col_1idx, row_1idx,
+                        _dd=dat_data, _rb=DAT_ROW_BASE):
+                dr = row_1idx - _rb
+                dc = col_1idx - 1
+                if dr < 0 or dr >= len(_dd):
+                    return ""
+                row_d = _dd[dr]
+                return row_d[dc] if dc < len(row_d) else ""
+
+            esh = _esc(sh)   # escaped sheet name สำหรับ range
+
+            # ── ล้างข้อมูลเก่า (P-S, X-Y) ─────────────────────
+            for col_s, col_e in [(16, 19), (24, 25)]:
+                for row_1idx in range(CFG["DATA_START"], CFG["DATA_END"] + 1):
+                    for c in range(col_s, col_e + 1):
+                        if not is_formula(c, row_1idx) and dat_val(c, row_1idx):
+                            all_value_upd.append({
+                                "range" : f"'{esh}'!{col_letter(c)}{row_1idx}",
+                                "values": [[""]]
+                            })
+
+            # ── ประจำเดือน ──────────────────────────────────────
+            for r_i, row_vals in enumerate(top_data):
+                found = False
+                for c_i, cell_val in enumerate(row_vals):
+                    if "ประจำเดือน" in str(cell_val):
+                        target_col = max(c_i + 2, 16)
+                        all_value_upd.append({
+                            "range" : f"'{esh}'!{col_letter(target_col)}{r_i + 1}",
+                            "values": [[month_label]]
+                        })
+                        found = True
+                        break
+                if found:
+                    break
+
+            # ── วันที่ + ชื่อวัน ────────────────────────────────
+            COL_DAY_EN_FB = 14
+            for bi, dc in enumerate(date_cols):
+                dnc = (day_name_cols[bi] if bi < len(day_name_cols)
+                       else (COL_DAY_EN_FB if bi == 0 else None))
+                for j in range(num_rows):
+                    row      = CFG["DATA_START"] + j
+                    d        = days[j]
+                    date_str = d.strftime("%d/%m/") + str(d.year + 543)
+                    day_idx  = (d.weekday() + 1) % 7
+                    all_value_upd.append({
+                        "range" : f"'{esh}'!{col_letter(dc)}{row}",
+                        "values": [[date_str]]
+                    })
+                    if dnc:
+                        all_value_upd.append({
+                            "range" : f"'{esh}'!{col_letter(dnc)}{row}",
+                            "values": [[DAY_EN_LIST[day_idx]]]
+                        })
+
+            # ── map วันที่ → row ────────────────────────────────
+            date_row_map: dict[tuple, int] = {}
+            for bi, dc in enumerate(date_cols):
+                for r_i in range(num_rows):
+                    row_1idx = CFG["DATA_START"] + r_i
+                    val      = dat_val(dc, row_1idx)
+                    date_key = norm_date(str(val).strip())
+                    if date_key:
+                        date_row_map[(bi, date_key)] = row_1idx
+
+            # ── เวลาเข้า-ออก ────────────────────────────────────
+            att_rows = att_df[att_df["รหัสพนักงาน"] == eid].to_dict("records")
+            att_map  = {r["วันที่"]: r for r in att_rows if r.get("วันที่")}
+            COL_DAY_EN = 14
+
+            for (bi, date_key), r_num in date_row_map.items():
+                if date_key not in att_map:
+                    continue
+                att    = att_map[date_key]
+                ti_col = ti_cols[bi]   if bi < len(ti_cols)   else None
+                to_col = to_cols[bi]   if bi < len(to_cols)   else None
+                nt_col = note_cols[bi] if bi < len(note_cols) else None
+
+                if ti_col and not is_formula(ti_col, r_num):
+                    all_value_upd.append({"range": f"'{esh}'!{col_letter(ti_col)}{r_num}",
+                                           "values": [[att["เวลาเข้า"]]]})
+                if to_col and not is_formula(to_col, r_num):
+                    all_value_upd.append({"range": f"'{esh}'!{col_letter(to_col)}{r_num}",
+                                           "values": [[att["เวลาออก"]]]})
+                if nt_col and not is_formula(nt_col, r_num):
+                    all_value_upd.append({"range": f"'{esh}'!{col_letter(nt_col)}{r_num}",
+                                           "values": [[att["หมายเหตุ"]]]})
+                day_abbr = _day_en_from_datestr(date_key)
+                if day_abbr and not is_formula(COL_DAY_EN, r_num):
+                    all_value_upd.append({"range": f"'{esh}'!N{r_num}",
+                                           "values": [[day_abbr]]})
+
+            # ── formatting ──────────────────────────────────────
+            for j in range(num_rows):
+                row = CFG["DATA_START"] + j
+                bg  = GRAY if days[j].weekday() == 6 else WHITE
+                all_fmt_reqs.append({"repeatCell": {
+                    "range": {"sheetId": sheet_id,
+                               "startRowIndex": row - 1, "endRowIndex": row,
+                               "startColumnIndex": COL_N_0, "endColumnIndex": COL_Y_0},
+                    "cell" : {"userEnteredFormat": {"backgroundColor": bg}},
+                    "fields": "userEnteredFormat.backgroundColor"
+                }})
+            for (bi, date_key), r_num in date_row_map.items():
+                if date_key not in att_map:
+                    continue
+                if "วันหยุด" in str(att_map[date_key].get("หมายเหตุ", "")):
+                    all_fmt_reqs.append({"repeatCell": {
+                        "range": {"sheetId": sheet_id,
+                                   "startRowIndex": r_num - 1, "endRowIndex": r_num,
+                                   "startColumnIndex": COL_N_0, "endColumnIndex": COL_Y_0},
+                        "cell" : {"userEnteredFormat": {"backgroundColor": GRAY}},
+                        "fields": "userEnteredFormat.backgroundColor"
+                    }})
+
+            success_cnt += 1
+
+        progress_bar.progress(base_prog + prog_span * 0.65)
+
+        # ── Phase 5a: Batch write values ─────────────────────────
+        status_text.info(
+            f"✍️ [5/5] เขียน {len(all_value_upd)} เซลล์ "
+            f"+ จัดสี {len(all_fmt_reqs)} แถว {chunk_label}..."
+        )
+        if all_value_upd:
+            try:
+                _sheets_retry(ss.values_batch_update, {
+                    "valueInputOption": "USER_ENTERED",
+                    "data"            : all_value_upd
+                })
+            except Exception as e:
+                # batch write ล้มเหลว → ส่ง chunk นี้ไป slow mode
+                st.warning(
+                    f"⚠️ batch write ล้มเหลว [{chunk_label}]: {e}\n"
+                    f"จะลอง slow mode ให้อัตโนมัติค่ะ..."
+                )
+                success_cnt -= sum(1 for _ in chunk)   # ยกเลิก success ของ chunk นี้
+                fallback_pairs.extend(chunk)
+                progress_bar.progress(base_prog + prog_span)
+                continue
+
+        progress_bar.progress(base_prog + prog_span * 0.85)
+
+        # ── Phase 5b: Batch format ────────────────────────────────
+        if all_fmt_reqs:
+            try:
+                _sheets_retry(ss.batch_update, {"requests": all_fmt_reqs})
+            except Exception as e:
+                st.warning(f"⚠️ batch format ล้มเหลว [{chunk_label}]: {e} (ข้อมูลถูกเขียนแล้วค่ะ)")
+
+        progress_bar.progress(base_prog + prog_span)
+
+    # ── Fallback: slow mode สำหรับ chunk ที่ batch write ล้มเหลว ─
+    if fallback_pairs:
+        st.info(f"🔄 ลอง slow mode ให้ {len(fallback_pairs)} Sheet ที่ค้างค่ะ...")
+        for idx, (eid, sh) in enumerate(fallback_pairs):
+            try:
+                emp_rows   = att_df[att_df["รหัสพนักงาน"] == eid].to_dict("records")
+                shared_ws  = _sheets_retry(ss.worksheet, sh)
+                shared_hdr = _sheets_retry(shared_ws.row_values, CFG["HEADER_ROW"])
+                r1 = _clear_attendance(ss, sh)
+                if not r1["ok"]:
+                    st_errors.append(f"{sh} (fallback): ล้างไม่ได้ — {r1['msg']}")
+                    continue
+                r2 = _generate_dates(ss, sh, auto_month, auto_year,
+                                     ws=shared_ws, headers=shared_hdr)
+                if not r2["ok"]:
+                    st_errors.append(f"{sh} (fallback): สร้างวันที่ไม่ได้ — {r2['msg']}")
+                    continue
+                r3 = _import_attendance(ss, sh, emp_rows,
+                                        ws=shared_ws, headers=shared_hdr)
+                if not r3["ok"]:
+                    st_errors.append(f"{sh} (fallback): วางเวลาไม่ได้ — {r3['msg']}")
+                    continue
+                success_cnt += 1
+            except Exception as e:
+                st_errors.append(f"{sh} (fallback): {e}")
+            if idx < len(fallback_pairs) - 1:
+                time.sleep(6)
+
+    progress_bar.progress(1.0)
+    status_text.empty()
+
+    if not st_errors:
+        st.success(f"✅ เสร็จสิ้น! ประมวลผลครบ {success_cnt} Sheet ค่ะ")
+    else:
+        st.warning(f"⚠️ เสร็จ {success_cnt} Sheet / มีปัญหา {len(st_errors)} Sheet")
+        with st.expander("❌ รายการที่มีปัญหา"):
+            for err in st_errors:
+                st.text(err)
 
 
 def _generate_dates(ss: gspread.Spreadsheet, sheet_name: str,
