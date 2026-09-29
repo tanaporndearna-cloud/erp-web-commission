@@ -97,10 +97,11 @@ def write_com_erp(rows: list, dates: list, progress_cb=None) -> str:
 
 def write_summarize_com(branch_totals: dict, dates: list = None, date_start_day: int = 20) -> str:
     """
-    เขียนข้อมูลลงชีท สรุปCom โดย match วันที่จาก xlsx กับ header ของ Google Sheet
+    เขียนข้อมูลลงชีท สรุปCom แบบ positional — เริ่มจาก col E เสมอ
     branch_totals: {"T2": [v1..v32], "T3": [...], ...}
-    dates: list of date strings เช่น ["21/08/69", "22/08/69", ...] จาก read_sum_sheet
-           ถ้าไม่ส่งมา จะวางตามตำแหน่ง (พฤติกรรมเดิม)
+    vals[0] = วันที่ 20 (col E), vals[1] = วันที่ 21 (col F), ไปเรื่อยๆ
+    หมายเหตุ: ไม่ใช้ day-matching เพราะวันที่ 20 ปรากฏสองครั้งใน header
+    (ต้นรอบ col E + ปลายรอบ col AJ) ทำให้ mapping ผิดพลาด
     """
     gc = get_client()
     sh = gc.open_by_key(SHEET_ID)
@@ -108,14 +109,10 @@ def write_summarize_com(branch_totals: dict, dates: list = None, date_start_day:
 
     all_values = ws.get_all_values()
 
-    def _parse_day_num(val) -> int:
-        """แปลงค่าเซลล์ header เป็นเลขวันที่ (1-31)
-        รองรับทั้ง '21', 21, '21/08/69', '21-Aug-69' ฯลฯ
-        คืน None ถ้า parse ไม่ได้หรือไม่ใช่วันที่ 1-31
-        """
+    # หา date header row (แถวที่มีตัวเลข 1-31 มากที่สุดใน col E เป็นต้นไป)
+    def _parse_day_num(val):
         try:
             s = str(val).strip()
-            # ตัดส่วนหลัง separator ออก (เอาแค่ตัวเลขส่วนแรก)
             for sep in ('/', '-', ' ', '.'):
                 if sep in s:
                     s = s.split(sep)[0].strip()
@@ -125,16 +122,13 @@ def write_summarize_com(branch_totals: dict, dates: list = None, date_start_day:
         except (ValueError, TypeError):
             return None
 
-    # ===== FIX 1: หา date header row แบบ robust =====
-    # แถวที่มีจำนวนเลขวันที่ไม่ซ้ำ (1-31) มากที่สุดจาก col E เป็นต้นไปคือ header จริง
-    # (วิธีเดิมหา v==20 หรือ v==1 พลาดเมื่อ template เริ่มที่วัน 21 ไม่ใช่ 20)
     date_header_row_idx = None
     best_score = 0
     for i, row in enumerate(all_values):
         if len(row) < 5:
             continue
         days_seen = set()
-        for ci in range(4, min(4 + 35, len(row))):  # col E ถึงประมาณ col AK
+        for ci in range(4, min(4 + 35, len(row))):
             d = _parse_day_num(row[ci])
             if d is not None:
                 days_seen.add(d)
@@ -148,26 +142,9 @@ def write_summarize_com(branch_totals: dict, dates: list = None, date_start_day:
             f"(พบวันที่ไม่ซ้ำสูงสุด {best_score} วัน ต้องการ ≥15)"
         )
 
-    date_header_row = date_header_row_idx + 1  # 1-indexed
-    date_col_start = 5  # col E
-
-    # ===== FIX 2: สร้าง day_to_col ด้วย _parse_day_num =====
-    # (วิธีเดิมใช้ int() ตรงๆ ทำให้ '20/09/69' raise ValueError → วันที่ 20 หายจาก dict)
-    sheet_date_row = all_values[date_header_row_idx]
-    day_to_col = {}  # {21: 5, 22: 6, ..., 31: 15, 1: 16, ...}
-    sheet_last_date_col = date_col_start
-    for ci in range(date_col_start - 1, len(sheet_date_row)):
-        day_num = _parse_day_num(sheet_date_row[ci])
-        if day_num is not None:
-            day_to_col[day_num] = ci + 1  # 1-indexed
-            sheet_last_date_col = ci + 1
-
-    def _date_str_to_day(date_str: str):
-        """แปลง '21/08/69' → 21"""
-        try:
-            return int(str(date_str).split('/')[0])
-        except Exception:
-            return None
+    date_col_start = 5  # col E (1-indexed) = วันที่ 20 เสมอ
+    num_day_cols = 32   # col E ถึง col AJ
+    sheet_last_date_col = date_col_start + num_day_cols - 1  # col AJ
 
     # หา Commission TRC rows
     trc_row_map = {}
@@ -188,28 +165,11 @@ def write_summarize_com(branch_totals: dict, dates: list = None, date_start_day:
             continue
         row_idx = trc_row_map[branch]
 
-        if dates and day_to_col:
-            # ===== Match by day number =====
-            # สร้าง dict: day_number → value จาก xlsx
-            day_val_map = {}
-            for vi, date_str in enumerate(dates[:32]):
-                if vi >= len(vals):
-                    break
-                day_num = _date_str_to_day(date_str)
-                if day_num is not None:
-                    day_val_map[day_num] = round(float(vals[vi] or 0), 2)
-
-            # เขียนทีละ cell ตาม col ที่ตรงกับ day_number
-            for day_num, col in day_to_col.items():
-                val = day_val_map.get(day_num, 0)
-                cell_a1 = gspread.utils.rowcol_to_a1(row_idx, col)
-                batch_data.append({"range": cell_a1, "values": [[val]]})
-        else:
-            # ===== Fallback: วางตามตำแหน่ง (พฤติกรรมเดิม) =====
-            row_vals = [round(float(v or 0), 2) for v in vals[:32]]
-            start_cell = gspread.utils.rowcol_to_a1(row_idx, date_col_start)
-            end_cell = gspread.utils.rowcol_to_a1(row_idx, date_col_start + len(row_vals) - 1)
-            batch_data.append({"range": f"{start_cell}:{end_cell}", "values": [row_vals]})
+        # เขียนแบบ positional: vals[0] → col E, vals[1] → col F, ...
+        row_vals = [round(float(v or 0), 2) for v in vals[:num_day_cols]]
+        start_cell = gspread.utils.rowcol_to_a1(row_idx, date_col_start)
+        end_cell = gspread.utils.rowcol_to_a1(row_idx, date_col_start + len(row_vals) - 1)
+        batch_data.append({"range": f"{start_cell}:{end_cell}", "values": [row_vals]})
 
         written += 1
 
