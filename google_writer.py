@@ -108,35 +108,59 @@ def write_summarize_com(branch_totals: dict, dates: list = None, date_start_day:
 
     all_values = ws.get_all_values()
 
-    # หา date header row (col E = date_start_day หรือ 1)
-    date_header_row_idx = None
-    for i, row in enumerate(all_values):
-        if len(row) >= 5:
-            try:
-                v = int(row[4])
-                if v == date_start_day or v == 1:
-                    date_header_row_idx = i
+    def _parse_day_num(val) -> int:
+        """แปลงค่าเซลล์ header เป็นเลขวันที่ (1-31)
+        รองรับทั้ง '21', 21, '21/08/69', '21-Aug-69' ฯลฯ
+        คืน None ถ้า parse ไม่ได้หรือไม่ใช่วันที่ 1-31
+        """
+        try:
+            s = str(val).strip()
+            # ตัดส่วนหลัง separator ออก (เอาแค่ตัวเลขส่วนแรก)
+            for sep in ('/', '-', ' ', '.'):
+                if sep in s:
+                    s = s.split(sep)[0].strip()
                     break
-            except (ValueError, TypeError):
-                pass
+            d = int(s)
+            return d if 1 <= d <= 31 else None
+        except (ValueError, TypeError):
+            return None
 
-    if date_header_row_idx is None:
-        raise ValueError(f"หา date header row ใน สรุปCom ไม่เจอ (col E = {date_start_day})")
+    # ===== FIX 1: หา date header row แบบ robust =====
+    # แถวที่มีจำนวนเลขวันที่ไม่ซ้ำ (1-31) มากที่สุดจาก col E เป็นต้นไปคือ header จริง
+    # (วิธีเดิมหา v==20 หรือ v==1 พลาดเมื่อ template เริ่มที่วัน 21 ไม่ใช่ 20)
+    date_header_row_idx = None
+    best_score = 0
+    for i, row in enumerate(all_values):
+        if len(row) < 5:
+            continue
+        days_seen = set()
+        for ci in range(4, min(4 + 35, len(row))):  # col E ถึงประมาณ col AK
+            d = _parse_day_num(row[ci])
+            if d is not None:
+                days_seen.add(d)
+        if len(days_seen) > best_score:
+            best_score = len(days_seen)
+            date_header_row_idx = i
+
+    if date_header_row_idx is None or best_score < 15:
+        raise ValueError(
+            f"หา date header row ใน สรุปCom ไม่เจอ "
+            f"(พบวันที่ไม่ซ้ำสูงสุด {best_score} วัน ต้องการ ≥15)"
+        )
 
     date_header_row = date_header_row_idx + 1  # 1-indexed
     date_col_start = 5  # col E
 
-    # สร้าง mapping: day_number → col_index (1-indexed) จาก header ของ Google Sheet
+    # ===== FIX 2: สร้าง day_to_col ด้วย _parse_day_num =====
+    # (วิธีเดิมใช้ int() ตรงๆ ทำให้ '20/09/69' raise ValueError → วันที่ 20 หายจาก dict)
     sheet_date_row = all_values[date_header_row_idx]
     day_to_col = {}  # {21: 5, 22: 6, ..., 31: 15, 1: 16, ...}
     sheet_last_date_col = date_col_start
     for ci in range(date_col_start - 1, len(sheet_date_row)):
-        try:
-            day_num = int(sheet_date_row[ci])
+        day_num = _parse_day_num(sheet_date_row[ci])
+        if day_num is not None:
             day_to_col[day_num] = ci + 1  # 1-indexed
             sheet_last_date_col = ci + 1
-        except (ValueError, TypeError):
-            pass
 
     def _date_str_to_day(date_str: str):
         """แปลง '21/08/69' → 21"""
