@@ -471,12 +471,12 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss):
     แทนที่ ~1000 calls + sleep แบบเดิม (~2 นาที vs ~45 นาที)
 
     การป้องกันความเสี่ยง:
-      - แบ่ง chunk ≤50 Sheet ต่อรอบ (ป้องกัน request too large)
+      - แบ่ง chunk ≤33 Sheet ต่อรอบ (33×3=99 ranges ต่อ call, limit=120)
       - escape apostrophe ในชื่อ Sheet (ป้องกัน A1 notation error)
       - validate คอลัมน์ก่อนเขียน (ข้าม Sheet ที่ผิดโครงสร้าง)
       - batch write fail → fallback slow mode เฉพาะ chunk นั้น
     """
-    CHUNK_SIZE  = 120  # จำนวน Sheet สูงสุดต่อ batch round
+    CHUNK_SIZE  = 33   # จำนวน Sheet สูงสุดต่อ batch round (33×3=99 ranges ต่อ call, limit=120)
     st_errors   = []
     success_cnt = 0
     fallback_pairs = []   # Sheet ที่ต้อง retry ด้วย slow mode
