@@ -699,42 +699,20 @@ def _copy_sum_to_com(ss: gspread.Spreadsheet, src_sheet: str, dst_sheet: str) ->
 
 def _clear_attendance(ss: gspread.Spreadsheet, sheet_name: str) -> dict:
     """ล้างข้อมูลเวลาที่กรอกมือ
-    ล้างคอลัมน์ M-Y (13-25) ทั้งหมด แถว 6-36
-    (คงสูตรไว้ — ไม่แตะ cell ที่เป็น formula เช่น สาย, ขาด, ล่วงเวลา)
-    ใช้ FORMULA render อย่างเดียว เพื่อลด API call
+    ล้างตรงๆ คอลัมน์ N-S (14-19) + X-Y (24-25) แถว 6-36
+    N-S และ X-Y เป็น manual input ทั้งหมด ไม่มีสูตร → ล้างได้เลยไม่ต้องเช็ค
     """
-    ROW_START  = 6
-    ROW_END    = 36
-    # กลุ่มคอลัมน์ที่ต้องล้าง: N-S (14-19) และ X-Y (24-25)
-    COL_GROUPS = [(14, 19), (24, 25)]   # N-S, X-Y
+    ROW_START = 6
+    ROW_END   = 36
 
     try:
         ws = _sheets_retry(ss.worksheet, sheet_name)
-
-        to_clear = []
-        for col_s, col_e in COL_GROUPS:
-            rng_a1 = (f"{col_letter(col_s)}{ROW_START}:"
-                      f"{col_letter(col_e)}{ROW_END}")
-            # ดึงแค่ FORMULA ครั้งเดียว (ลด read call ลงครึ่งหนึ่ง)
-            # เซลล์ที่มีค่าและไม่ใช่สูตร → formula จะเป็น string ธรรมดา (non-empty, no "=")
-            formulas = _sheets_retry(ws.get, rng_a1, value_render_option="FORMULA")
-
-            num_rows = ROW_END - ROW_START + 1
-            num_cols = col_e - col_s + 1
-            for r_i in range(num_rows):
-                frow = formulas[r_i] if r_i < len(formulas) else []
-                for c_i in range(num_cols):
-                    f = str(frow[c_i]).strip() if c_i < len(frow) else ""
-                    # ไม่ใช่สูตร AND มีข้อมูลอยู่ → ล้าง
-                    if f and not f.startswith("="):
-                        to_clear.append(
-                            f"{col_letter(col_s + c_i)}{ROW_START + r_i}"
-                        )
-
-        if not to_clear:
-            return {"ok": True, "msg": "ไม่มีข้อมูลที่ต้องล้าง (สะอาดอยู่แล้ว)"}
-        _sheets_retry(ws.batch_clear, to_clear)
-        return {"ok": True, "msg": f"ล้างแล้ว {len(to_clear)} เซลล์ (สูตรยังอยู่ครบ)"}
+        ranges_to_clear = [
+            f"N{ROW_START}:S{ROW_END}",   # วันที่, เวลาเข้า-ออก, กลับก่อน
+            f"X{ROW_START}:Y{ROW_END}",   # เบิกล่วงหน้า
+        ]
+        _sheets_retry(ws.batch_clear, ranges_to_clear)
+        return {"ok": True, "msg": f"ล้าง N-S และ X-Y แถว {ROW_START}-{ROW_END} เรียบร้อยค่ะ"}
     except Exception as e:
         return {"ok": False, "msg": str(e)}
 
