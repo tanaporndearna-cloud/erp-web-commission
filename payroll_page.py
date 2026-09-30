@@ -1488,13 +1488,14 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
     """
     COL_HIST_START = 13
     COL_HIST_END   = 25
-    NUM_ROWS       = 100
+    NUM_ROWS       = 45    # พอสำหรับ header 5 แถว + ข้อมูล 40 แถว
     width          = COL_HIST_END - COL_HIST_START + 1
     CHUNK          = 100   # max ranges per batch_get call
 
     results      = []
-    copy_reqs    = []   # สำหรับ PASTE_FORMAT เท่านั้น
-    write_tasks  = []
+    copy_reqs     = []   # สำหรับ PASTE_FORMAT เท่านั้น
+    write_tasks   = []
+    bookmark_tasks = []  # ranges สำหรับเขียน month_yr bookmark ที่คอลัมน์สุดท้าย
     n_sheets     = len(sheet_names)
 
     def _upd(pct: float, msg: str):
@@ -1517,21 +1518,22 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
     for n in missing:
         results.append({"ok": False, "sheet": n, "msg": "ไม่พบชีตในไฟล์"})
 
-    # ── Phase 1b: batch-read แถว 1 ทุกชีต เพื่อหา last column (~1-2 calls) ─
+    # ── Phase 1b: batch-read แถว 1-5 ทุกชีต เพื่อหา last column (~1-2 calls) ─
+    # อ่านแถว 1-5 แทนแถว 1 อย่างเดียว เพราะแถว 1 ของ history block มักว่างเปล่า
+    # แต่แถว 2-4 มีหัว "ใบประเมิน / ประจำเดือน" ที่บอกว่ามีประวัติอยู่แล้ว
     _upd(0.15, f"⏳ กำลังตรวจสอบตำแหน่งประวัติ ({len(valid_names)} Sheet)...")
-    row1_data: dict[str, list] = {}
+    header_data: dict[str, list[list]] = {}   # name → list of rows (max 5 rows)
     for i in range(0, len(valid_names), CHUNK):
         chunk_names  = valid_names[i:i + CHUNK]
-        chunk_ranges = [f"'{n}'!1:1" for n in chunk_names]
+        chunk_ranges = [f"'{n}'!1:5" for n in chunk_names]
         try:
             resp = _sheets_retry(ss.values_batch_get, chunk_ranges)
             for name, vr in zip(chunk_names,
                                  resp.get("valueRanges", [])):
-                vals = vr.get("values", [])
-                row1_data[name] = vals[0] if vals else []
-        except Exception as e:
+                header_data[name] = vr.get("values", [])
+        except Exception:
             for name in chunk_names:
-                row1_data[name] = []
+                header_data[name] = []
 
     # ── Phase 1c: คำนวณ paste position + resize ถ้าจำเป็น ────────────
     paste_info: dict[str, tuple] = {}   # name → (paste_start, paste_end, ws)
@@ -1540,14 +1542,18 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
     resize_reqs = []   # รวม resize ทุกชีตไว้ก่อน — batch ครั้งเดียว
 
     for sheet_name in valid_names:
-        ws       = ws_dict[sheet_name]
-        row1     = row1_data.get(sheet_name, [])
+        ws      = ws_dict[sheet_name]
+        rows    = header_data.get(sheet_name, [])
+
+        # หา rightmost non-empty cell ในแถว 1-5 ทั้งหมด
+        # อ่าน 5 แถวเพราะแถว 1-4 ของ history block อาจว่าง แต่แถว 5 มี header "วันที่/เวลาเข้า..."
         last_col = COL_HIST_END
-        for ci in range(len(row1) - 1, -1, -1):
-            if str(row1[ci]).strip():
-                if ci + 1 > last_col:
-                    last_col = ci + 1
-                break
+        for row in rows:
+            for ci in range(len(row) - 1, -1, -1):
+                if str(row[ci]).strip():
+                    if ci + 1 > last_col:
+                        last_col = ci + 1
+                    break
 
         paste_start = last_col + 2
         paste_end   = paste_start + width
@@ -1631,18 +1637,28 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                       f"{col_letter(paste_end - 1)}{NUM_ROWS}")
             write_tasks.append((ws, dst_a1, src_values, sheet_name, paste_start))
 
+        # ── bookmark: เขียน month_yr ที่คอลัมน์สุดท้ายของ block แถว 1 ──────
+        # ทำให้ครั้งถัดไปสแกนแถว 1-5 แล้วเจอ bookmark จะรู้ว่า block จบที่ไหน
+        # ป้องกัน history ซ้อนทับกัน แม้คอลัมน์ท้ายของ template จะว่างเปล่า
+        bookmark_range = f"'{ws.title}'!{col_letter(paste_end - 1)}1"
+        bookmark_tasks.append(bookmark_range)
+
         results.append({"ok": True, "sheet": sheet_name,
                         "msg": f"บันทึกประวัติ {month_yr} ที่คอลัมน์ "
                                f"{col_letter(paste_start)} เรียบร้อยค่ะ"})
 
     # ── Phase 2: batch copyPaste PASTE_FORMAT (เส้นตาราง/สีเท่านั้น) ──────
-    _upd(0.55, f"⏳ กำลัง copy ตาราง/สี ({len(valid_names)} Sheet)...")
+    CP_CHUNK = 20   # เล็กลงเพื่อไม่ timeout + ทำให้ progress ดูไม่ค้าง
     if copy_reqs:
-        reqs_only  = [r for _, r in copy_reqs]
-        names_only = [n for n, _ in copy_reqs]
-        for i in range(0, len(reqs_only), 50):
-            chunk       = reqs_only[i:i + 50]
-            chunk_names = names_only[i:i + 50]
+        reqs_only   = [r for _, r in copy_reqs]
+        names_only  = [n for n, _ in copy_reqs]
+        total_reqs  = len(reqs_only)
+        for i in range(0, total_reqs, CP_CHUNK):
+            chunk       = reqs_only[i:i + CP_CHUNK]
+            chunk_names = names_only[i:i + CP_CHUNK]
+            done_sheets = i // 2          # แต่ละชีตมี 2 req (unmerge + copyPaste)
+            pct = 0.55 + 0.20 * (i / total_reqs)
+            _upd(pct, f"⏳ กำลัง copy ตาราง/สี ({done_sheets}/{len(valid_names)} Sheet)...")
             try:
                 _sheets_retry(ss.batch_update, {"requests": chunk})
             except Exception:
@@ -1665,6 +1681,12 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             batch_data.append({
                 "range" : f"'{ws.title}'!{dst_a1}",
                 "values": src_values,
+            })
+        # รวม bookmark ของ chunk เดียวกันเข้าไปด้วย
+        for bm_range in bookmark_tasks[i:i + WRITE_CHUNK]:
+            batch_data.append({
+                "range" : bm_range,
+                "values": [[month_yr]],
             })
         try:
             _sheets_retry(ss.values_batch_update, {
