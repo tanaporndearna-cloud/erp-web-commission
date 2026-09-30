@@ -1488,7 +1488,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
     """
     COL_HIST_START = 13
     COL_HIST_END   = 25
-    NUM_ROWS       = 45    # พอสำหรับ header 5 แถว + ข้อมูล 40 แถว
+    NUM_ROWS       = 100   # บันทึกถึงแถว 100
     width          = COL_HIST_END - COL_HIST_START + 1
     CHUNK          = 100   # max ranges per batch_get call
 
@@ -1666,10 +1666,17 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                     try:
                         _sheets_retry(ss.batch_update, {"requests": [req]})
                     except Exception as e2:
+                        err_str = str(e2)
+                        # ถ้า error เป็นเรื่อง merge ให้ treat เป็น warning (ค่ายังถูก write ใน Phase 3)
+                        is_merge_err = "intersects a merge" in err_str or "partially intersects" in err_str
                         for r in results:
                             if r["sheet"] == sname:
-                                r["ok"]  = False
-                                r["msg"] = f"copy format ล้มเหลว: {e2}"
+                                if is_merge_err:
+                                    # ok ยังเป็น True — Phase 3 จะ write ค่าให้อยู่ดี
+                                    r["msg"] = "⚠️ copy format ข้ามเพราะมี merged cell (ค่าบันทึกแล้ว)"
+                                else:
+                                    r["ok"]  = False
+                                    r["msg"] = f"copy format ล้มเหลว: {e2}"
 
     # ── Phase 3: batch write values ทุกชีตพร้อมกัน (1-2 API calls) ────────
     _upd(0.75, f"⏳ กำลังบันทึกค่า ({len(write_tasks)} Sheet)...")
