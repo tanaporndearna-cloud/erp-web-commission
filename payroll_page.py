@@ -356,85 +356,112 @@ def render_payroll_page(gc: gspread.Client,
         h_year  = int(st.session_state.get("h_year",  _def_year))
 
         # ── อ่านวันหยุดจาก Google Sheet ──
-        HOLIDAY_SHEET = "วันหยุดประเพณี"
+        HOLIDAY_SHEET   = "วันหยุดประเพณี"
+        _HOL_WS_KEY     = "_hol_ws"       # cache worksheet object
+        _HOL_DATA_KEY   = "_hol_data"     # cache records list
 
-        def _ensure_holiday_sheet(ss: gspread.Spreadsheet) -> gspread.Worksheet:
-            """สร้างชีต วันหยุดประเพณี ถ้ายังไม่มี"""
-            try:
-                return ss.worksheet(HOLIDAY_SHEET)
-            except gspread.exceptions.WorksheetNotFound:
-                ws = ss.add_worksheet(title=HOLIDAY_SHEET, rows=200, cols=4)
-                ws.append_row(["ปี (พ.ศ.)", "เดือน", "วันที่"])
-                ws.freeze(rows=1)
-                return ws
+        def _get_holiday_ws(ss: gspread.Spreadsheet) -> gspread.Worksheet:
+            """คืน worksheet (cache ไว้ใน session_state — ss.worksheet() 1 ครั้งต่อ session)"""
+            if _HOL_WS_KEY not in st.session_state:
+                try:
+                    st.session_state[_HOL_WS_KEY] = ss.worksheet(HOLIDAY_SHEET)
+                except gspread.exceptions.WorksheetNotFound:
+                    ws = ss.add_worksheet(title=HOLIDAY_SHEET, rows=200, cols=4)
+                    ws.append_row(["ปี (พ.ศ.)", "เดือน", "วันที่"])
+                    ws.freeze(rows=1)
+                    st.session_state[_HOL_WS_KEY] = ws
+            return st.session_state[_HOL_WS_KEY]
 
-        def _load_holidays(ss, year, month):
+        def _load_all_holidays(ss):
+            """โหลดจาก sheet ครั้งเดียวต่อ session (cache ใน session_state)"""
+            if _HOL_DATA_KEY not in st.session_state:
+                try:
+                    ws = _get_holiday_ws(ss)
+                    st.session_state[_HOL_DATA_KEY] = ws.get_all_records()
+                except Exception as e:
+                    st.error(f"โหลดวันหยุดไม่ได้: {e}")
+                    return []
+            return st.session_state[_HOL_DATA_KEY]
+
+        def _invalidate_hol_cache():
+            st.session_state.pop(_HOL_DATA_KEY, None)
+
+        def _add_holidays_batch(ss, year, month, days: list[int]):
+            """เพิ่มหลายวันพร้อมกัน — ใช้ cache เช็ค dup, append ทีเดียว"""
             try:
-                ws = _ensure_holiday_sheet(ss)
-                rows = ws.get_all_records()
-                return [r for r in rows
-                        if str(r.get("ปี (พ.ศ.)","")) == str(year)
-                        and str(r.get("เดือน","")) == str(month)]
+                ws   = _get_holiday_ws(ss)
+                rows = _load_all_holidays(ss)          # ใช้ cache
+                existing = {
+                    int(r.get("วันที่", 0))
+                    for r in rows
+                    if str(r.get("ปี (พ.ศ.)", "")) == str(year)
+                    and str(r.get("เดือน", "")) == str(month)
+                }
+                to_add  = [d for d in days if d not in existing]
+                skipped = [d for d in days if d in existing]
+                if to_add:
+                    ws.append_rows([[year, month, d] for d in sorted(to_add)],
+                                   value_input_option="RAW")
+                    _invalidate_hol_cache()            # ล้าง cache ให้ fetch ใหม่รอบหน้า
+                return to_add, skipped
             except Exception as e:
-                st.error(f"โหลดวันหยุดไม่ได้: {e}")
-                return []
-
-        def _add_holiday(ss, year, month, day):
-            try:
-                ws = _ensure_holiday_sheet(ss)
-                rows = ws.get_all_records()
-                # ตรวจซ้ำ
-                for r in rows:
-                    if (str(r.get("ปี (พ.ศ.)","")) == str(year)
-                            and str(r.get("เดือน","")) == str(month)
-                            and str(r.get("วันที่","")) == str(day)):
-                        return False, f"วันที่ {day} เดือน {month} มีอยู่แล้วค่ะ"
-                ws.append_row([year, month, day])
-                return True, "เพิ่มสำเร็จ"
-            except Exception as e:
-                return False, str(e)
+                raise RuntimeError(str(e))
 
         def _delete_holiday(ss, year, month, day):
             try:
-                ws = _ensure_holiday_sheet(ss)
-                all_vals = ws.get_all_values()
-                for i, row in enumerate(all_vals):
-                    if i == 0:
-                        continue  # skip header
-                    if (str(row[0]) == str(year)
-                            and str(row[1]) == str(month)
-                            and str(row[2]) == str(day)):
-                        ws.delete_rows(i + 1)  # gspread 1-based
+                ws   = _get_holiday_ws(ss)
+                rows = _load_all_holidays(ss)          # ใช้ cache — ไม่ต้อง get_all_values อีกรอบ
+                for i, r in enumerate(rows):
+                    if (str(r.get("ปี (พ.ศ.)", "")) == str(year)
+                            and str(r.get("เดือน", "")) == str(month)
+                            and str(r.get("วันที่", "")) == str(day)):
+                        ws.delete_rows(i + 2)          # +2: row1=header, i 0-based → 1-based+1
+                        _invalidate_hol_cache()
                         return True
                 return False
             except Exception as e:
                 st.error(f"ลบไม่ได้: {e}")
                 return False
 
-        # โหลดรายการ
-        h_data = _load_holidays(ss, int(h_year), int(h_month))
-        h_data_sorted = sorted(h_data, key=lambda r: int(r.get("วันที่", 0)))
+        # โหลดรายการ **ทั้งหมด** (ไม่กรองเดือน)
+        h_data_all = _load_all_holidays(ss)
+        h_data_sorted = sorted(
+            h_data_all,
+            key=lambda r: (int(r.get("ปี (พ.ศ.)", 0)),
+                           int(r.get("เดือน", 0)),
+                           int(r.get("วันที่", 0)))
+        )
 
         if h_data_sorted:
-            st.markdown(f"**วันหยุดตามประเพณีเดือน{THAI_MONTHS[int(h_month)]} {int(h_year)} — {len(h_data_sorted)} วัน**")
-            for row in h_data_sorted:
-                day_val = row.get("วันที่", "")
-                month_pad = str(int(h_month)).zfill(2)
-                col_d, col_x = st.columns([5, 1])
-                col_d.markdown(
-                    f"<span style='background:#dc3545;color:#fff;padding:3px 10px;"
-                    f"border-radius:6px;font-weight:bold;font-size:0.9em'>"
-                    f"{str(day_val).zfill(2)}/{month_pad}</span>",
-                    unsafe_allow_html=True
-                )
-                if col_x.button("🗑️", key=f"del_hol_{h_year}_{h_month}_{day_val}",
-                                  help="ลบวันหยุดนี้"):
-                    ok = _delete_holiday(ss, int(h_year), int(h_month), int(day_val))
-                    if ok:
-                        st.success(f"ลบวันที่ {day_val} แล้วค่ะ")
-                        st.rerun()
+            st.markdown(f"**วันหยุดตามประเพณีทั้งหมด — {len(h_data_sorted)} วัน**")
+            # จัดกลุ่มตามปี-เดือน
+            from itertools import groupby
+            for (yr, mo), grp in groupby(
+                h_data_sorted,
+                key=lambda r: (int(r.get("ปี (พ.ศ.)", 0)), int(r.get("เดือน", 0)))
+            ):
+                month_name = THAI_MONTHS.get(mo, str(mo))
+                st.markdown(f"📅 **{month_name} {yr}**")
+                for row in grp:
+                    day_val   = row.get("วันที่", "")
+                    row_yr    = int(row.get("ปี (พ.ศ.)", yr))
+                    row_mo    = int(row.get("เดือน", mo))
+                    month_pad = str(row_mo).zfill(2)
+                    col_d, col_x = st.columns([5, 1])
+                    col_d.markdown(
+                        f"<span style='background:#dc3545;color:#fff;padding:3px 10px;"
+                        f"border-radius:6px;font-weight:bold;font-size:0.9em'>"
+                        f"{str(day_val).zfill(2)}/{month_pad}/{str(row_yr)[2:]}</span>",
+                        unsafe_allow_html=True
+                    )
+                    if col_x.button("🗑️", key=f"del_hol_{row_yr}_{row_mo}_{day_val}",
+                                      help="ลบวันหยุดนี้"):
+                        ok = _delete_holiday(ss, row_yr, row_mo, int(day_val))
+                        if ok:
+                            st.success(f"ลบวันที่ {day_val}/{month_pad} แล้วค่ะ")
+                            st.rerun()
         else:
-            st.info(f"ยังไม่มีวันหยุดตามประเพณีเดือน{THAI_MONTHS[int(h_month)]} {int(h_year)} ค่ะ")
+            st.info("ยังไม่มีวันหยุดตามประเพณีค่ะ")
 
         st.divider()
 
@@ -457,29 +484,25 @@ def render_payroll_page(gc: gspread.Client,
             st.write("")
             st.write("")
             if st.button("เพิ่ม", key="btn_add_hol", use_container_width=True):
-                # แยกวันที่จาก text
                 raw_days = [d.strip() for d in new_days_str.replace("،", ",").split(",") if d.strip()]
                 if not raw_days:
                     st.warning("กรุณากรอกวันที่ค่ะ")
                 else:
-                    invalid, added, skipped = [], [], []
-                    for d_str in raw_days:
-                        if not d_str.isdigit() or not (1 <= int(d_str) <= 31):
-                            invalid.append(d_str)
-                            continue
-                        ok, msg = _add_holiday(ss, int(h_year), int(h_month), int(d_str))
-                        if ok:
-                            added.append(d_str)
-                        else:
-                            skipped.append(d_str)
+                    invalid = [d for d in raw_days if not d.isdigit() or not (1 <= int(d) <= 31)]
+                    valid   = [int(d) for d in raw_days if d.isdigit() and 1 <= int(d) <= 31]
                     if invalid:
                         st.error(f"❌ ค่าไม่ถูกต้อง: {', '.join(invalid)}")
-                    if added:
-                        st.success(f"✅ เพิ่มวันที่ {', '.join(added)} {THAI_MONTHS[int(h_month)]} {int(h_year)} สำเร็จค่ะ")
-                    if skipped:
-                        st.warning(f"⚠️ วันที่ {', '.join(skipped)} มีอยู่แล้ว ข้ามไปค่ะ")
-                    if added:
-                        st.rerun()
+                    if valid:
+                        try:
+                            added, skipped = _add_holidays_batch(ss, int(h_year), int(h_month), valid)
+                            if added:
+                                st.success(f"✅ เพิ่มวันที่ {', '.join(str(d) for d in added)} {THAI_MONTHS[int(h_month)]} {int(h_year)} สำเร็จค่ะ")
+                            if skipped:
+                                st.warning(f"⚠️ วันที่ {', '.join(str(d) for d in skipped)} มีอยู่แล้ว ข้ามไปค่ะ")
+                            if added:
+                                st.rerun()
+                        except RuntimeError as e:
+                            st.error(f"❌ {e}")
 
 
 # ── Backend: ERP Import ──────────────────────────────────────────
