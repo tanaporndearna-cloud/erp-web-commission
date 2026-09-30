@@ -309,8 +309,23 @@ def render_payroll_page(gc: gspread.Client,
                     if st.button("▶ เริ่มคิดเงินเดือน (ล้างเก่า → สร้างวันที่ → วางเวลา)",
                                  type="primary", key="btn_payroll", use_container_width=True):
                         if use_fast:
+                            # โหลดวันหยุดตามประเพณีก่อนส่งให้ fast mode
+                            _hmap = {}
+                            try:
+                                _hws  = ss.worksheet("วันหยุดประเพณี")
+                                _hrows = _hws.get_all_records()
+                                for _hr in _hrows:
+                                    _d = int(_hr.get("วันที่", 0) or 0)
+                                    _m = int(_hr.get("เดือน",  0) or 0)
+                                    _y = int(_hr.get("ปี (พ.ศ.)", 0) or 0)
+                                    if _d and _m and _y:
+                                        _dk = f"{str(_d).zfill(2)}/{str(_m).zfill(2)}/{_y}"
+                                        _hmap[_dk] = True  # แค่มาร์กว่าวันนี้คือวันหยุด
+                            except Exception:
+                                pass
                             _run_sheets_fast(matched_pairs, att_df,
-                                             auto_month, auto_year, ss)
+                                             auto_month, auto_year, ss,
+                                             holidays_map=_hmap)
                         else:
                             _run_sheets(matched_pairs, att_df, do_history=False)
 
@@ -320,6 +335,131 @@ def render_payroll_page(gc: gspread.Client,
                         _run_sheets(matched_pairs, att_df, do_history=True)
             else:
                 st.warning("⚠️ อ่านไฟล์ไม่ได้ หรือไม่พบข้อมูล")
+
+    # ══════════════════════════════════════════════════════════════
+    # วันหยุดตามประเพณี — บันทึกวันหยุดพิเศษประจำเดือน
+    # ══════════════════════════════════════════════════════════════
+    with st.expander("📅  วันหยุดตามประเพณี", expanded=False):
+        st.caption("บันทึกวันหยุดตามประเพณีประจำเดือน เช่น วันเฉลิมพระชนมพรรษา ข้อมูลเก็บในชีต 'วันหยุดประเพณี'")
+
+        THAI_MONTHS = ["", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน",
+                       "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม",
+                       "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+
+        import datetime as _dt
+        _now = _dt.date.today()
+        _def_month = _now.month
+        _def_year  = _now.year + 543   # CE → BE
+
+        hcol1, hcol2 = st.columns([2, 3])
+        with hcol1:
+            h_month = st.selectbox("เดือน", list(range(1, 13)),
+                                   index=_def_month - 1,
+                                   format_func=lambda m: THAI_MONTHS[m],
+                                   key="h_month")
+        with hcol2:
+            h_year = st.number_input("ปี (พ.ศ.)", min_value=2560, max_value=2599,
+                                     value=_def_year, step=1, key="h_year")
+
+        # ── อ่านวันหยุดจาก Google Sheet ──
+        HOLIDAY_SHEET = "วันหยุดประเพณี"
+
+        def _ensure_holiday_sheet(ss: gspread.Spreadsheet) -> gspread.Worksheet:
+            """สร้างชีต วันหยุดประเพณี ถ้ายังไม่มี"""
+            try:
+                return ss.worksheet(HOLIDAY_SHEET)
+            except gspread.exceptions.WorksheetNotFound:
+                ws = ss.add_worksheet(title=HOLIDAY_SHEET, rows=200, cols=4)
+                ws.append_row(["ปี (พ.ศ.)", "เดือน", "วันที่"])
+                ws.freeze(rows=1)
+                return ws
+
+        def _load_holidays(ss, year, month):
+            try:
+                ws = _ensure_holiday_sheet(ss)
+                rows = ws.get_all_records()
+                return [r for r in rows
+                        if str(r.get("ปี (พ.ศ.)","")) == str(year)
+                        and str(r.get("เดือน","")) == str(month)]
+            except Exception as e:
+                st.error(f"โหลดวันหยุดไม่ได้: {e}")
+                return []
+
+        def _add_holiday(ss, year, month, day):
+            try:
+                ws = _ensure_holiday_sheet(ss)
+                rows = ws.get_all_records()
+                # ตรวจซ้ำ
+                for r in rows:
+                    if (str(r.get("ปี (พ.ศ.)","")) == str(year)
+                            and str(r.get("เดือน","")) == str(month)
+                            and str(r.get("วันที่","")) == str(day)):
+                        return False, f"วันที่ {day} เดือน {month} มีอยู่แล้วค่ะ"
+                ws.append_row([year, month, day])
+                return True, "เพิ่มสำเร็จ"
+            except Exception as e:
+                return False, str(e)
+
+        def _delete_holiday(ss, year, month, day):
+            try:
+                ws = _ensure_holiday_sheet(ss)
+                all_vals = ws.get_all_values()
+                for i, row in enumerate(all_vals):
+                    if i == 0:
+                        continue  # skip header
+                    if (str(row[0]) == str(year)
+                            and str(row[1]) == str(month)
+                            and str(row[2]) == str(day)):
+                        ws.delete_rows(i + 1)  # gspread 1-based
+                        return True
+                return False
+            except Exception as e:
+                st.error(f"ลบไม่ได้: {e}")
+                return False
+
+        # โหลดรายการ
+        h_data = _load_holidays(ss, int(h_year), int(h_month))
+        h_data_sorted = sorted(h_data, key=lambda r: int(r.get("วันที่", 0)))
+
+        if h_data_sorted:
+            st.markdown(f"**วันหยุดตามประเพณีเดือน{THAI_MONTHS[int(h_month)]} {int(h_year)} — {len(h_data_sorted)} วัน**")
+            for row in h_data_sorted:
+                day_val = row.get("วันที่", "")
+                month_pad = str(int(h_month)).zfill(2)
+                col_d, col_x = st.columns([5, 1])
+                col_d.markdown(
+                    f"<span style='background:#dc3545;color:#fff;padding:3px 10px;"
+                    f"border-radius:6px;font-weight:bold;font-size:0.9em'>"
+                    f"{str(day_val).zfill(2)}/{month_pad}</span>",
+                    unsafe_allow_html=True
+                )
+                if col_x.button("🗑️", key=f"del_hol_{h_year}_{h_month}_{day_val}",
+                                  help="ลบวันหยุดนี้"):
+                    ok = _delete_holiday(ss, int(h_year), int(h_month), int(day_val))
+                    if ok:
+                        st.success(f"ลบวันที่ {day_val} แล้วค่ะ")
+                        st.rerun()
+        else:
+            st.info(f"ยังไม่มีวันหยุดตามประเพณีเดือน{THAI_MONTHS[int(h_month)]} {int(h_year)} ค่ะ")
+
+        st.divider()
+
+        # ── ฟอร์มเพิ่มวันหยุด ──
+        st.markdown("**➕ เพิ่มวันหยุด** (กรอกแค่วันที่ ชื่อจะดึงจากรายงานเวลาเข้าออกเองค่ะ)")
+        f1, f2 = st.columns([2, 1])
+        with f1:
+            new_day = st.number_input("วันที่", min_value=1, max_value=31,
+                                      value=1, step=1, key="new_hday")
+        with f2:
+            st.write("")
+            st.write("")
+            if st.button("เพิ่ม", key="btn_add_hol", use_container_width=True):
+                ok, msg = _add_holiday(ss, int(h_year), int(h_month), int(new_day))
+                if ok:
+                    st.success(f"✅ เพิ่มวันที่ {new_day} {THAI_MONTHS[int(h_month)]} {int(h_year)} สำเร็จค่ะ")
+                    st.rerun()
+                else:
+                    st.error(f"❌ {msg}")
 
 
 # ── Backend: ERP Import ──────────────────────────────────────────
@@ -465,7 +605,7 @@ def _clear_attendance(ss: gspread.Spreadsheet, sheet_name: str) -> dict:
         return {"ok": False, "msg": str(e)}
 
 
-def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss):
+def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None):
     """
     ⚡ Batch mode — ประมวลผลทุก Sheet ด้วย ~5 API calls ต่อ chunk
     แทนที่ ~1000 calls + sleep แบบเดิม (~2 นาที vs ~45 นาที)
@@ -725,6 +865,24 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss):
                     all_value_upd.append({"range": f"'{esh}'!N{r_num}",
                                            "values": [[day_abbr]]})
 
+            # ── วันหยุดตามประเพณี ─────────────────────────────────
+            # เขียน "วันหยุด" (+ ชื่อจาก att ถ้ามี) ลงหมายเหตุเสมอ
+            # เพื่อให้สูตรขาดงานจับเจอคำว่า "วันหยุด" ได้
+            if holidays_map:
+                for (bi, date_key), r_num in date_row_map.items():
+                    if date_key not in holidays_map:
+                        continue
+                    nt_col = (note_cols[bi] if bi < len(note_cols) else None)
+                    if nt_col and not is_formula(nt_col, r_num):
+                        # ดึงชื่อวันหยุดจากหมายเหตุในรายงานเวลาเข้าออก (ถ้ามี)
+                        existing_note = ""
+                        if date_key in att_map:
+                            existing_note = str(att_map[date_key].get("หมายเหตุ", "") or "").strip()
+                        note_val = f"วันหยุด {existing_note}".strip() if existing_note else "วันหยุด"
+                        all_value_upd.append({
+                            "range" : f"'{esh}'!{col_letter(nt_col)}{r_num}",
+                            "values": [[note_val]]})
+
             # ── formatting ──────────────────────────────────────
             for j in range(num_rows):
                 row = CFG["DATA_START"] + j
@@ -747,6 +905,18 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss):
                         "cell" : {"userEnteredFormat": {"backgroundColor": GRAY}},
                         "fields": "userEnteredFormat.backgroundColor"
                     }})
+
+            # ── ไฮไลต์วันหยุดตามประเพณี (สีเทาเดียวกับวันหยุด) ─────────
+            if holidays_map:
+                for (bi, date_key), r_num in date_row_map.items():
+                    if date_key in holidays_map and date_key not in att_map:
+                        all_fmt_reqs.append({"repeatCell": {
+                            "range": {"sheetId": sheet_id,
+                                       "startRowIndex": r_num - 1, "endRowIndex": r_num,
+                                       "startColumnIndex": COL_N_0, "endColumnIndex": COL_Y_0},
+                            "cell" : {"userEnteredFormat": {"backgroundColor": GRAY}},
+                            "fields": "userEnteredFormat.backgroundColor"
+                        }})
 
             success_cnt += 1
 
