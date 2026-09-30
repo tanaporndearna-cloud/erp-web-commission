@@ -466,7 +466,19 @@ def render_payroll_page(gc: gspread.Client,
         )
 
         if h_data_sorted:
-            st.markdown(f"**วันหยุดตามประเพณีทั้งหมด — {len(h_data_sorted)} วัน**")
+            top_l, top_r = st.columns([5, 2])
+            top_l.markdown(f"**วันหยุดตามประเพณีทั้งหมด — {len(h_data_sorted)} วัน**")
+            if top_r.button("🗑️ ล้างทั้งหมด", key="del_all_hol", use_container_width=True):
+                try:
+                    _ws_all = _get_holiday_ws(ss)
+                    _ws_all.clear()
+                    _ws_all.append_row(["ปี (พ.ศ.)", "เดือน", "วันที่"])
+                    _ws_all.freeze(rows=1)
+                    _invalidate_hol_cache()
+                    st.success("ล้างวันหยุดทั้งหมดแล้วค่ะ")
+                    st.rerun()
+                except Exception as _e:
+                    st.error(f"ล้างไม่ได้: {_e}")
             # จัดกลุ่มตามปี-เดือน
             from itertools import groupby
             for (yr, mo), grp in groupby(
