@@ -1030,7 +1030,7 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
             for (bi, date_key), r_num in date_row_map.items():
                 if date_key not in att_map:
                     continue
-                if "วันหยุด" in str(att_map[date_key].get("หมายเหตุ", "")):
+                if str(att_map[date_key].get("หมายเหตุ", "")).startswith("วันหยุด"):
                     all_fmt_reqs.append({"repeatCell": {
                         "range": {"sheetId": sheet_id,
                                    "startRowIndex": r_num - 1, "endRowIndex": r_num,
