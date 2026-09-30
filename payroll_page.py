@@ -706,7 +706,7 @@ def _clear_attendance(ss: gspread.Spreadsheet, sheet_name: str) -> dict:
     ROW_START  = 6
     ROW_END    = 36
     # กลุ่มคอลัมน์ที่ต้องล้าง: [(col_start, col_end), ...]  1-indexed
-    COL_GROUPS = [(16, 19), (24, 25)]   # P-S, X-Y
+    COL_GROUPS = [(14, 19), (24, 25)]   # N-S, X-Y
 
     try:
         ws = _sheets_retry(ss.worksheet, sheet_name)
@@ -1185,7 +1185,15 @@ def _generate_dates(ss: gspread.Spreadsheet, sheet_name: str,
                 if dnc:
                     updates.append({"range": f"{col_letter(dnc)}{row}",
                                     "values": [[DAY_EN_LIST[day_idx]]]})
-            # ไม่ clear แถวที่เกิน เพื่อไม่ให้ทับส่วนสรุปด้านล่าง
+            # ล้างแถวที่เกิน num_rows (กรณีเดือนนี้สั้นกว่าเดือนที่แล้ว)
+            # เช่น กรกฎาคม 30 วัน แต่สิงหาคม 31 วัน → ต้องล้าง row 36 ออก
+            for extra in range(num_rows, CFG["DATA_END"] - CFG["DATA_START"] + 1):
+                extra_row = CFG["DATA_START"] + extra
+                updates.append({"range": f"{col_letter(dc)}{extra_row}",
+                                "values": [[""]]})
+                if dnc:
+                    updates.append({"range": f"{col_letter(dnc)}{extra_row}",
+                                    "values": [[""]]})
 
         # ── อัปเดตเซลล์ "ประจำเดือน" (ค้นหาใน 10 แถวแรก) ──────────────
         month_label = f"{MONTH_TH_FULL[month]} {year_be}"
@@ -1633,9 +1641,26 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         }))
 
         if src_values:
+            # กรอง src_values: เอาเฉพาะแถว header (5 แถวแรก) + แถวที่วันที่ตรงกับ month_yr
+            # เพื่อป้องกันแถวเดือนอื่น (เช่น สิงหาคม) ปนมาใน history กรกฎาคม
+            m_str, y_str = month_yr.split("/")
+            date_suffix_1 = f"/{m_str.zfill(2)}/{y_str}"   # /07/2569
+            date_suffix_2 = f"/{m_str}/{y_str}"             # /7/2569
+            filtered = []
+            for ri, row in enumerate(src_values):
+                if ri < 5:
+                    # header rows — เก็บไว้เสมอ
+                    filtered.append(row)
+                    continue
+                # ตรวจคอลัมน์ที่ 2 (index 1 = N = วันที่) — ถ้าว่างหรือตรงเดือน ก็เก็บ
+                cell_date = row[1].strip() if len(row) > 1 else ""
+                if not cell_date or date_suffix_1 in cell_date or date_suffix_2 in cell_date:
+                    filtered.append(row)
+                # ถ้าวันที่เป็นเดือนอื่น → ข้ามแถวนี้ (ไม่ append)
+
             dst_a1 = (f"{col_letter(paste_start)}1:"
                       f"{col_letter(paste_end - 1)}{NUM_ROWS}")
-            write_tasks.append((ws, dst_a1, src_values, sheet_name, paste_start))
+            write_tasks.append((ws, dst_a1, filtered, sheet_name, paste_start))
 
         # ── bookmark: เขียน month_yr ที่คอลัมน์สุดท้ายของ block แถว 1 ──────
         # ทำให้ครั้งถัดไปสแกนแถว 1-5 แล้วเจอ bookmark จะรู้ว่า block จบที่ไหน
