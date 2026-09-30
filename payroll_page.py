@@ -445,21 +445,36 @@ def render_payroll_page(gc: gspread.Client,
         st.divider()
 
         # ── ฟอร์มเพิ่มวันหยุด ──
-        st.markdown("**➕ เพิ่มวันหยุด** (กรอกแค่วันที่ ชื่อจะดึงจากรายงานเวลาเข้าออกเองค่ะ)")
-        f1, f2 = st.columns([2, 1])
+        st.markdown("**➕ เพิ่มวันหยุด** (กรอกช่วงวันที่ ถ้าวันเดียวให้ใส่วันเริ่ม = วันสิ้นสุดค่ะ)")
+        f1, f2, f3 = st.columns([2, 2, 1])
         with f1:
-            new_day = st.number_input("วันที่", min_value=1, max_value=31,
-                                      value=1, step=1, key="new_hday")
+            day_start = st.number_input("วันที่เริ่ม", min_value=1, max_value=31,
+                                        value=1, step=1, key="new_hday_start")
         with f2:
+            day_end = st.number_input("วันที่สิ้นสุด", min_value=1, max_value=31,
+                                      value=1, step=1, key="new_hday_end")
+        with f3:
             st.write("")
             st.write("")
             if st.button("เพิ่ม", key="btn_add_hol", use_container_width=True):
-                ok, msg = _add_holiday(ss, int(h_year), int(h_month), int(new_day))
-                if ok:
-                    st.success(f"✅ เพิ่มวันที่ {new_day} {THAI_MONTHS[int(h_month)]} {int(h_year)} สำเร็จค่ะ")
-                    st.rerun()
+                if int(day_end) < int(day_start):
+                    st.error("❌ วันที่สิ้นสุดต้องไม่น้อยกว่าวันที่เริ่มค่ะ")
                 else:
-                    st.error(f"❌ {msg}")
+                    added, skipped = [], []
+                    for d in range(int(day_start), int(day_end) + 1):
+                        ok, msg = _add_holiday(ss, int(h_year), int(h_month), d)
+                        if ok:
+                            added.append(d)
+                        else:
+                            skipped.append(d)
+                    if added:
+                        days_str = ", ".join(str(d) for d in added)
+                        st.success(f"✅ เพิ่มวันที่ {days_str} {THAI_MONTHS[int(h_month)]} {int(h_year)} สำเร็จค่ะ")
+                    if skipped:
+                        skip_str = ", ".join(str(d) for d in skipped)
+                        st.warning(f"⚠️ วันที่ {skip_str} มีอยู่แล้ว ข้ามไปค่ะ")
+                    if added:
+                        st.rerun()
 
 
 # ── Backend: ERP Import ──────────────────────────────────────────
