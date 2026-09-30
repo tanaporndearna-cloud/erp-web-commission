@@ -438,45 +438,30 @@ def render_payroll_page(gc: gspread.Client,
 
         st.divider()
 
-        # ── ฟอร์มเพิ่มวันหยุด — วันที่เริ่ม / วันที่สิ้นสุด / เดือน / ปี / ปุ่ม บรรทัดเดียว ──
+        # ── ฟอร์มเพิ่มวันหยุด — วันที่ / เดือน / ปี / ปุ่ม บรรทัดเดียว ──
         st.markdown("**➕ เพิ่มวันหยุด**")
-        f1, f2, f3, f4, f5 = st.columns([1, 1, 2, 1, 1])
+        f1, f2, f3, f4 = st.columns([1, 2, 1, 1])
         with f1:
-            day_start = st.number_input("วันที่เริ่ม", min_value=1, max_value=31,
-                                        value=1, step=1, key="new_hday_start")
+            new_day = st.number_input("วันที่", min_value=1, max_value=31,
+                                      value=1, step=1, key="new_hday")
         with f2:
-            day_end = st.number_input("ถึงวันที่", min_value=1, max_value=31,
-                                      value=1, step=1, key="new_hday_end")
-        with f3:
             h_month = st.selectbox("เดือน", list(range(1, 13)),
-                                   index=_def_month - 1,
+                                   index=h_month - 1,
                                    format_func=lambda m: THAI_MONTHS[m],
                                    key="h_month")
-        with f4:
+        with f3:
             h_year = st.number_input("ปี (พ.ศ.)", min_value=2560, max_value=2599,
-                                     value=_def_year, step=1, key="h_year")
-        with f5:
+                                     value=h_year, step=1, key="h_year")
+        with f4:
             st.write("")
             st.write("")
             if st.button("เพิ่ม", key="btn_add_hol", use_container_width=True):
-                if int(day_end) < int(day_start):
-                    st.error("❌ วันที่สิ้นสุดต้องไม่น้อยกว่าวันที่เริ่มค่ะ")
+                ok, msg = _add_holiday(ss, int(h_year), int(h_month), int(new_day))
+                if ok:
+                    st.success(f"✅ เพิ่มวันที่ {new_day} {THAI_MONTHS[int(h_month)]} {int(h_year)} สำเร็จค่ะ")
+                    st.rerun()
                 else:
-                    added, skipped = [], []
-                    for d in range(int(day_start), int(day_end) + 1):
-                        ok, msg = _add_holiday(ss, int(h_year), int(h_month), d)
-                        if ok:
-                            added.append(d)
-                        else:
-                            skipped.append(d)
-                    if added:
-                        days_str = ", ".join(str(d) for d in added)
-                        st.success(f"✅ เพิ่มวันที่ {days_str} {THAI_MONTHS[int(h_month)]} {int(h_year)} สำเร็จค่ะ")
-                    if skipped:
-                        skip_str = ", ".join(str(d) for d in skipped)
-                        st.warning(f"⚠️ วันที่ {skip_str} มีอยู่แล้ว ข้ามไปค่ะ")
-                    if added:
-                        st.rerun()
+                    st.error(f"❌ {msg}")
 
 
 # ── Backend: ERP Import ──────────────────────────────────────────
