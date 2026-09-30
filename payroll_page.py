@@ -1574,7 +1574,16 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         paste_start, paste_end, ws = paste_info[sheet_name]
         src_values = src_data.get(sheet_name, [])
 
-        # PASTE_FORMAT: copy เส้นตาราง/สี/header style — ไม่มีสูตร ไม่มี value
+        # unmerge destination ก่อน เพื่อป้องกัน "partially intersects a merge" error
+        # แล้วค่อย PASTE_FORMAT: copy เส้นตาราง/สี/header style — ไม่มีสูตร ไม่มี value
+        dest_range = {
+            "sheetId"         : ws.id,
+            "startRowIndex"   : 0,
+            "endRowIndex"     : NUM_ROWS,
+            "startColumnIndex": paste_start - 1,
+            "endColumnIndex"  : paste_end - 1,
+        }
+        copy_reqs.append((sheet_name, {"unmergeCells": {"range": dest_range}}))
         copy_reqs.append((sheet_name, {
             "copyPaste": {
                 "source": {
@@ -1584,13 +1593,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                     "startColumnIndex": COL_HIST_START - 1,
                     "endColumnIndex"  : COL_HIST_END,
                 },
-                "destination": {
-                    "sheetId"         : ws.id,
-                    "startRowIndex"   : 0,
-                    "endRowIndex"     : NUM_ROWS,
-                    "startColumnIndex": paste_start - 1,
-                    "endColumnIndex"  : paste_end - 1,
-                },
+                "destination": dest_range,
                 "pasteType"       : "PASTE_FORMAT",   # formatting เท่านั้น — ไม่มีสูตร
                 "pasteOrientation": "NORMAL",
             }
@@ -1624,15 +1627,31 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                                 r["ok"]  = False
                                 r["msg"] = f"copy format ล้มเหลว: {e2}"
 
-    # ── Phase 3: write values ทับ (RAW — ไม่มีสูตร) ────────────────────
-    for ws, dst_a1, src_values, sheet_name, _ in write_tasks:
+    # ── Phase 3: batch write values ทุกชีตพร้อมกัน (1-2 API calls) ────────
+    WRITE_CHUNK = 50
+    for i in range(0, len(write_tasks), WRITE_CHUNK):
+        chunk = write_tasks[i:i + WRITE_CHUNK]
+        batch_data = []
+        for ws, dst_a1, src_values, sheet_name, _ in chunk:
+            batch_data.append({
+                "range" : f"'{ws.title}'!{dst_a1}",
+                "values": src_values,
+            })
         try:
-            _sheets_retry(ws.update, dst_a1, src_values,
-                          value_input_option="RAW")
+            _sheets_retry(ss.values_batch_update, {
+                "valueInputOption": "RAW",
+                "data"            : batch_data,
+            })
         except Exception as e:
-            for r in results:
-                if r["sheet"] == sheet_name:
-                    r["ok"]  = False
-                    r["msg"] = str(e)
+            # batch พัง → fallback ทีละชีต
+            for ws, dst_a1, src_values, sheet_name, _ in chunk:
+                try:
+                    _sheets_retry(ws.update, dst_a1, src_values,
+                                  value_input_option="RAW")
+                except Exception as e2:
+                    for r in results:
+                        if r["sheet"] == sheet_name:
+                            r["ok"]  = False
+                            r["msg"] = str(e2)
 
     return results
