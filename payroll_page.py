@@ -699,19 +699,27 @@ def _copy_sum_to_com(ss: gspread.Spreadsheet, src_sheet: str, dst_sheet: str) ->
 
 def _clear_attendance(ss: gspread.Spreadsheet, sheet_name: str) -> dict:
     """ล้างข้อมูลเวลาที่กรอกมือ
-    ล้างตรงๆ คอลัมน์ N-S (14-19) + X-Y (24-25) แถว 6-36
-    N-S และ X-Y เป็น manual input ทั้งหมด ไม่มีสูตร → ล้างได้เลยไม่ต้องเช็ค
+    เขียน "" ทับทุก cell ในคอลัมน์ N-S (14-19) + X-Y (24-25) แถว 6-36
+    ใช้ values_batch_update แทน batch_clear เพื่อให้ work แม้มี merged cells
     """
     ROW_START = 6
     ROW_END   = 36
 
     try:
         ws = _sheets_retry(ss.worksheet, sheet_name)
-        ranges_to_clear = [
-            f"N{ROW_START}:S{ROW_END}",   # วันที่, เวลาเข้า-ออก, กลับก่อน
-            f"X{ROW_START}:Y{ROW_END}",   # เบิกล่วงหน้า
+
+        num_rows = ROW_END - ROW_START + 1   # 31 แถว
+        # สร้างข้อมูลว่าง: N-S = 6 คอลัมน์, X-Y = 2 คอลัมน์
+        empty_ns = [[""] * 6 for _ in range(num_rows)]
+        empty_xy = [[""] * 2 for _ in range(num_rows)]
+
+        # เขียน "" ทับทุก cell แทน batch_clear
+        # (ทำงานได้แม้มี merged cells ซึ่ง batch_clear บางครั้งข้ามไป)
+        updates = [
+            {"range": f"N{ROW_START}:S{ROW_END}", "values": empty_ns},
+            {"range": f"X{ROW_START}:Y{ROW_END}", "values": empty_xy},
         ]
-        _sheets_retry(ws.batch_clear, ranges_to_clear)
+        _sheets_retry(ws.batch_update, updates, value_input_option="RAW")
         return {"ok": True, "msg": f"ล้าง N-S และ X-Y แถว {ROW_START}-{ROW_END} เรียบร้อยค่ะ"}
     except Exception as e:
         return {"ok": False, "msg": str(e)}
@@ -894,15 +902,20 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
 
             esh = _esc(sh)   # escaped sheet name สำหรับ range
 
-            # ── ล้างข้อมูลเก่า (P-S, X-Y) ─────────────────────
-            for col_s, col_e in [(16, 19), (24, 25)]:
-                for row_1idx in range(CFG["DATA_START"], CFG["DATA_END"] + 1):
-                    for c in range(col_s, col_e + 1):
-                        if not is_formula(c, row_1idx) and dat_val(c, row_1idx):
-                            all_value_upd.append({
-                                "range" : f"'{esh}'!{col_letter(c)}{row_1idx}",
-                                "values": [[""]]
-                            })
+            # ── ล้างข้อมูลเก่า (N-S, X-Y) ─────────────────────
+            # ใช้ range-based bulk clear แทน cell-by-cell
+            # เพื่อล้างทุก cell รวมถึง cell ที่เป็น formula หรือ merged
+            _row_s = CFG["DATA_START"]
+            _row_e = CFG["DATA_END"]
+            _num_r = _row_e - _row_s + 1
+            all_value_upd.append({
+                "range" : f"'{esh}'!N{_row_s}:S{_row_e}",
+                "values": [[""] * 6 for _ in range(_num_r)]
+            })
+            all_value_upd.append({
+                "range" : f"'{esh}'!X{_row_s}:Y{_row_e}",
+                "values": [[""] * 2 for _ in range(_num_r)]
+            })
 
             # ── ประจำเดือน ──────────────────────────────────────
             for r_i, row_vals in enumerate(top_data):
