@@ -1042,7 +1042,7 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
             # ── ไฮไลต์วันหยุดตามประเพณี (สีเทาเดียวกับวันหยุด) ─────────
             if holidays_map:
                 for (bi, date_key), r_num in date_row_map.items():
-                    if date_key in holidays_map and date_key not in att_map:
+                    if date_key in holidays_map:
                         all_fmt_reqs.append({"repeatCell": {
                             "range": {"sheetId": sheet_id,
                                        "startRowIndex": r_num - 1, "endRowIndex": r_num,
@@ -1480,77 +1480,128 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                            ss_db: gspread.Spreadsheet | None = None) -> list:
     """
     Fast batch version — บันทึกประวัติทุก sheet ใน 3 รอบใหญ่:
-      Phase 1: อ่านทุก sheet (ไม่ sleep)
+      Phase 1: อ่านทุก sheet ด้วย batch_get (~5 API calls แทน 288)
       Phase 2: copyPaste ทุก sheet ใน batch เดียว (chunk 50)
-      Phase 3: write values ทุก sheet (ไม่ sleep)
+      Phase 3: write values ทุก sheet (batch)
     """
     COL_HIST_START = 13
     COL_HIST_END   = 25
     NUM_ROWS       = 100
     width          = COL_HIST_END - COL_HIST_START + 1
+    CHUNK          = 100   # max ranges per batch_get call
 
     results      = []
-    copy_reqs    = []   # (sheet_name, request_dict)
-    write_tasks  = []   # (ws, dst_a1, src_values, sheet_name)
+    copy_reqs    = []
+    write_tasks  = []
 
-    # ── Phase 1: อ่านแต่ละ sheet หา last column + src values ──────────
-    for sheet_name in sheet_names:
+    # ── Phase 1a: โหลด worksheet objects ทุกชีตพร้อมกัน (1 API call) ───
+    try:
+        all_ws_list = _sheets_retry(ss.worksheets)
+        ws_dict = {ws.title: ws for ws in all_ws_list}
+    except Exception as e:
+        return [{"ok": False, "sheet": n, "msg": f"โหลด worksheets ล้มเหลว: {e}"}
+                for n in sheet_names]
+
+    valid_names = [n for n in sheet_names if n in ws_dict]
+    missing     = [n for n in sheet_names if n not in ws_dict]
+    for n in missing:
+        results.append({"ok": False, "sheet": n, "msg": "ไม่พบชีตในไฟล์"})
+
+    # ── Phase 1b: batch-read แถว 1 ทุกชีต เพื่อหา last column (~1-2 calls) ─
+    row1_data: dict[str, list] = {}
+    for i in range(0, len(valid_names), CHUNK):
+        chunk_names  = valid_names[i:i + CHUNK]
+        chunk_ranges = [f"'{n}'!1:1" for n in chunk_names]
         try:
-            ws = _sheets_retry(ss.worksheet, sheet_name)
+            resp = _sheets_retry(ss.values_batch_get, chunk_ranges)
+            for name, vr in zip(chunk_names,
+                                 resp.get("valueRanges", [])):
+                vals = vr.get("values", [])
+                row1_data[name] = vals[0] if vals else []
+        except Exception as e:
+            for name in chunk_names:
+                row1_data[name] = []
 
-            all_vals = _sheets_retry(ws.get_all_values)
-            last_col = COL_HIST_END
-            for row in all_vals:
-                for ci in range(len(row) - 1, -1, -1):
-                    if row[ci].strip():
-                        if ci + 1 > last_col:
-                            last_col = ci + 1
-                        break
+    # ── Phase 1c: คำนวณ paste position + resize ถ้าจำเป็น ────────────
+    paste_info: dict[str, tuple] = {}   # name → (paste_start, paste_end, ws)
+    src_ranges_list: list[str]   = []
 
-            paste_start = last_col + 2
-            paste_end   = paste_start + width
+    for sheet_name in valid_names:
+        ws       = ws_dict[sheet_name]
+        row1     = row1_data.get(sheet_name, [])
+        last_col = COL_HIST_END
+        for ci in range(len(row1) - 1, -1, -1):
+            if str(row1[ci]).strip():
+                if ci + 1 > last_col:
+                    last_col = ci + 1
+                break
 
-            if paste_end > ws.col_count:
+        paste_start = last_col + 2
+        paste_end   = paste_start + width
+
+        if paste_end > ws.col_count:
+            try:
                 _sheets_retry(ws.resize,
                               rows=max(ws.row_count, NUM_ROWS),
                               cols=paste_end + 10)
+            except Exception:
+                pass
 
-            src_a1     = (f"{col_letter(COL_HIST_START)}1:"
-                          f"{col_letter(COL_HIST_END)}{NUM_ROWS}")
-            src_values = _sheets_retry(ws.get, src_a1,
-                                       value_render_option="FORMATTED_VALUE")
+        paste_info[sheet_name] = (paste_start, paste_end, ws)
+        src_ranges_list.append(
+            f"'{sheet_name}'!{col_letter(COL_HIST_START)}1"
+            f":{col_letter(COL_HIST_END)}{NUM_ROWS}"
+        )
 
-            copy_reqs.append((sheet_name, {
-                "copyPaste": {
-                    "source": {
-                        "sheetId"         : ws.id,
-                        "startRowIndex"   : 0,
-                        "endRowIndex"     : NUM_ROWS,
-                        "startColumnIndex": COL_HIST_START - 1,
-                        "endColumnIndex"  : COL_HIST_END,
-                    },
-                    "destination": {
-                        "sheetId"         : ws.id,
-                        "startRowIndex"   : 0,
-                        "endRowIndex"     : NUM_ROWS,
-                        "startColumnIndex": paste_start - 1,
-                        "endColumnIndex"  : paste_end - 1,
-                    },
-                    "pasteType"       : "PASTE_NORMAL",
-                    "pasteOrientation": "NORMAL",
-                }
-            }))
-
-            if src_values:
-                dst_a1 = (f"{col_letter(paste_start)}1:"
-                          f"{col_letter(paste_end - 1)}{NUM_ROWS}")
-                write_tasks.append((ws, dst_a1, src_values, sheet_name, paste_start))
-
-            results.append({"ok": True, "sheet": sheet_name,
-                            "msg": f"บันทึกประวัติ {month_yr} ที่คอลัมน์ "
-                                   f"{col_letter(paste_start)} เรียบร้อยค่ะ"})
+    # ── Phase 1d: batch-read source ranges ทุกชีตพร้อมกัน (~1-2 calls) ─
+    src_data: dict[str, list] = {}
+    for i in range(0, len(valid_names), CHUNK):
+        chunk_names  = valid_names[i:i + CHUNK]
+        chunk_ranges = src_ranges_list[i:i + CHUNK]
+        try:
+            resp = _sheets_retry(ss.values_batch_get, chunk_ranges,
+                                  valueRenderOption="FORMATTED_VALUE")
+            for name, vr in zip(chunk_names,
+                                  resp.get("valueRanges", [])):
+                src_data[name] = vr.get("values", [])
         except Exception as e:
-            results.append({"ok": False, "sheet": sheet_name, "msg": str(e)})
+            for name in chunk_names:
+                src_data[name] = []
+
+    # ── Phase 1e: สร้าง copy_reqs + write_tasks ─────────────────────
+    for sheet_name in valid_names:
+        paste_start, paste_end, ws = paste_info[sheet_name]
+        src_values = src_data.get(sheet_name, [])
+
+        copy_reqs.append((sheet_name, {
+            "copyPaste": {
+                "source": {
+                    "sheetId"         : ws.id,
+                    "startRowIndex"   : 0,
+                    "endRowIndex"     : NUM_ROWS,
+                    "startColumnIndex": COL_HIST_START - 1,
+                    "endColumnIndex"  : COL_HIST_END,
+                },
+                "destination": {
+                    "sheetId"         : ws.id,
+                    "startRowIndex"   : 0,
+                    "endRowIndex"     : NUM_ROWS,
+                    "startColumnIndex": paste_start - 1,
+                    "endColumnIndex"  : paste_end - 1,
+                },
+                "pasteType"       : "PASTE_NORMAL",
+                "pasteOrientation": "NORMAL",
+            }
+        }))
+
+        if src_values:
+            dst_a1 = (f"{col_letter(paste_start)}1:"
+                      f"{col_letter(paste_end - 1)}{NUM_ROWS}")
+            write_tasks.append((ws, dst_a1, src_values, sheet_name, paste_start))
+
+        results.append({"ok": True, "sheet": sheet_name,
+                        "msg": f"บันทึกประวัติ {month_yr} ที่คอลัมน์ "
+                               f"{col_letter(paste_start)} เรียบร้อยค่ะ"})
 
     # ── Phase 2: batch copyPaste ทุก sheet พร้อมกัน (chunk 50) ────────
     # ถ้า batch ล้มเหลว → fallback ทำทีละชีต เพื่อ isolate ว่าชีตไหนพัง
