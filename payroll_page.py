@@ -418,40 +418,57 @@ def render_payroll_page(gc: gspread.Client,
             except Exception as e:
                 raise RuntimeError(str(e))
 
+        def _rewrite_sheet(ws, keep_rows: list):
+            """Clear + เขียน keep_rows กลับ — เร็วกว่า delete_rows ทีละแถว (3 API calls คงที่)"""
+            header = ["ปี (พ.ศ.)", "เดือน", "วันที่"]
+            ws.clear()
+            ws.freeze(rows=0)                          # unfreeze ก่อน (freeze หลัง update)
+            if keep_rows:
+                ws.update([header] + keep_rows, value_input_option="RAW")
+            else:
+                ws.update([header], value_input_option="RAW")
+            ws.freeze(rows=1)
+
         def _delete_holiday(ss, year, month, day):
             try:
-                ws   = _get_holiday_ws(ss)
-                rows = _load_all_holidays(ss)
-                for i, r in enumerate(rows):
-                    if (str(r.get("ปี (พ.ศ.)", "")) == str(year)
-                            and str(r.get("เดือน", "")) == str(month)
-                            and str(r.get("วันที่", "")) == str(day)):
-                        ws.delete_rows(i + 2)
-                        _invalidate_hol_cache()
-                        return True
-                return False
+                ws       = _get_holiday_ws(ss)
+                all_vals = ws.get_all_values()         # row 0 = header
+                before   = len(all_vals) - 1           # จำนวน data rows เดิม
+                keep     = [
+                    row for i, row in enumerate(all_vals)
+                    if i > 0 and not (
+                        str(row[0]) == str(year)
+                        and str(row[1]) == str(month)
+                        and str(row[2]) == str(day)
+                    )
+                ]
+                if len(keep) == before:
+                    return False                        # ไม่เจอ row ที่จะลบ
+                _rewrite_sheet(ws, keep)
+                _invalidate_hol_cache()
+                return True
             except Exception as e:
                 st.error(f"ลบไม่ได้: {e}")
                 return False
 
         def _delete_month_holidays(ss, year, month):
-            """ลบวันหยุดทั้งเดือนพร้อมกัน — ใช้ get_all_values เพื่อได้ row index จริง"""
             try:
                 ws       = _get_holiday_ws(ss)
-                all_vals = ws.get_all_values()  # row 0 = header
-                to_del   = []
-                for i, row in enumerate(all_vals):
-                    if i == 0:
-                        continue  # skip header
-                    if len(row) >= 3 and str(row[0]) == str(year) and str(row[1]) == str(month):
-                        to_del.append(i + 1)   # sheet row = 1-based index
-                if not to_del:
+                all_vals = ws.get_all_values()
+                before   = len(all_vals) - 1
+                keep     = [
+                    row for i, row in enumerate(all_vals)
+                    if i > 0 and not (
+                        str(row[0]) == str(year)
+                        and str(row[1]) == str(month)
+                    )
+                ]
+                deleted = before - len(keep)
+                if deleted == 0:
                     return 0
-                # ลบจากล่างขึ้นบน ไม่ให้ index เลื่อน
-                for row_num in sorted(to_del, reverse=True):
-                    ws.delete_rows(row_num)
+                _rewrite_sheet(ws, keep)
                 _invalidate_hol_cache()
-                return len(to_del)
+                return deleted
             except Exception as e:
                 st.error(f"ลบทั้งเดือนไม่ได้: {e}")
                 return 0
@@ -1231,6 +1248,30 @@ def _read_attendance_file(file) -> pd.DataFrame | None:
                 v = row.iloc[idx]
                 return str(v).strip() if pd.notna(v) else ""
 
+            def norm_time(val: str) -> str:
+                """Normalize เวลา → "H:MM น." เสมอ
+                รองรับ: "8:14 น.", "08:14:00", "0.347222..." (Excel fraction), "7:37"
+                """
+                if not val:
+                    return ""
+                # ตัด "น." และช่องว่างออกก่อน
+                t = val.replace("น.", "").replace("น", "").strip()
+                # Excel เก็บเวลาเป็น float fraction เช่น 0.347222 = 08:20
+                try:
+                    f = float(t)
+                    if 0 < f < 1:
+                        total_min = round(f * 1440)
+                        h, m = divmod(total_min, 60)
+                        return f"{h}:{m:02d} น."
+                except ValueError:
+                    pass
+                # รูปแบบ HH:MM:SS หรือ H:MM
+                m2 = re.match(r"^(\d{1,2}):(\d{2})", t)
+                if m2:
+                    h, m = int(m2.group(1)), int(m2.group(2))
+                    return f"{h}:{m:02d} น."
+                return val  # fallback ไม่แตะ
+
             emp_id_raw = row.iloc[CFG["ATT_EMP_ID"]]
             emp_id = str(int(emp_id_raw)) if pd.notna(emp_id_raw) else ""
 
@@ -1238,8 +1279,8 @@ def _read_attendance_file(file) -> pd.DataFrame | None:
                 "รหัสพนักงาน": emp_id,
                 "วัน"         : safe_str(CFG["ATT_DAY"]),
                 "วันที่"      : date_str,
-                "เวลาเข้า"    : safe_str(CFG["ATT_TIME_IN"]),
-                "เวลาออก"     : safe_str(CFG["ATT_TIME_OUT"]),
+                "เวลาเข้า"    : norm_time(safe_str(CFG["ATT_TIME_IN"])),
+                "เวลาออก"     : norm_time(safe_str(CFG["ATT_TIME_OUT"])),
                 "หมายเหตุ"    : safe_str(CFG["ATT_NOTE"]),
             })
         return pd.DataFrame(rows) if rows else None
