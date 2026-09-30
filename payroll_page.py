@@ -1249,7 +1249,7 @@ def _read_attendance_file(file) -> pd.DataFrame | None:
                 return str(v).strip() if pd.notna(v) else ""
 
             def norm_time(val: str) -> str:
-                """Normalize เวลา → "H:MM น." เสมอ
+                """Normalize เวลา → "H:MM" (ไม่มี น.) เพื่อให้ USER_ENTERED parse เป็น time จริงใน Sheets
                 รองรับ: "8:14 น.", "08:14:00", "8:54:00 AM", "0.347222..." (Excel fraction), "7:37"
                 """
                 if not val:
@@ -1262,7 +1262,7 @@ def _read_attendance_file(file) -> pd.DataFrame | None:
                         h += 12
                     elif period == "AM" and h == 12:
                         h = 0
-                    return f"{h}:{m:02d} น."
+                    return f"{h}:{m:02d}"
                 # ตัด "น." และช่องว่างออก
                 t = val.replace("น.", "").replace("น", "").strip()
                 # Excel เก็บเวลาเป็น float fraction เช่น 0.347222 = 08:20
@@ -1271,14 +1271,14 @@ def _read_attendance_file(file) -> pd.DataFrame | None:
                     if 0 < f < 1:
                         total_min = round(f * 1440)
                         h, m = divmod(total_min, 60)
-                        return f"{h}:{m:02d} น."
+                        return f"{h}:{m:02d}"
                 except ValueError:
                     pass
                 # รูปแบบ HH:MM:SS หรือ H:MM
                 m2 = re.match(r"^(\d{1,2}):(\d{2})", t)
                 if m2:
                     h, m = int(m2.group(1)), int(m2.group(2))
-                    return f"{h}:{m:02d} น."
+                    return f"{h}:{m:02d}"
                 return val  # fallback ไม่แตะ
 
             emp_id_raw = row.iloc[CFG["ATT_EMP_ID"]]
