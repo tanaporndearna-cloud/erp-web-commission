@@ -320,12 +320,23 @@ def render_payroll_page(gc: gspread.Client,
                                     _y = int(_hr.get("ปี (พ.ศ.)", 0) or 0)
                                     if _d and _m and _y:
                                         _dk = f"{str(_d).zfill(2)}/{str(_m).zfill(2)}/{_y}"
-                                        _hmap[_dk] = True  # แค่มาร์กว่าวันนี้คือวันหยุด
+                                        _hmap[_dk] = True
                             except Exception:
                                 pass
                             _run_sheets_fast(matched_pairs, att_df,
                                              auto_month, auto_year, ss,
                                              holidays_map=_hmap)
+                            # ── ล้างวันหยุดออกจาก sheet อัตโนมัติหลังรันสำเร็จ ──
+                            try:
+                                _hws2 = ss.worksheet("วันหยุดประเพณี")
+                                _hws2.clear()
+                                _hws2.append_row(["ปี (พ.ศ.)", "เดือน", "วันที่"])
+                                _hws2.freeze(rows=1)
+                                # ล้าง cache ด้วย
+                                st.session_state.pop("_hol_data", None)
+                                st.session_state.pop("_hol_ws",   None)
+                            except Exception:
+                                pass
                         else:
                             _run_sheets(matched_pairs, att_df, do_history=False)
 
@@ -410,18 +421,41 @@ def render_payroll_page(gc: gspread.Client,
         def _delete_holiday(ss, year, month, day):
             try:
                 ws   = _get_holiday_ws(ss)
-                rows = _load_all_holidays(ss)          # ใช้ cache — ไม่ต้อง get_all_values อีกรอบ
+                rows = _load_all_holidays(ss)
                 for i, r in enumerate(rows):
                     if (str(r.get("ปี (พ.ศ.)", "")) == str(year)
                             and str(r.get("เดือน", "")) == str(month)
                             and str(r.get("วันที่", "")) == str(day)):
-                        ws.delete_rows(i + 2)          # +2: row1=header, i 0-based → 1-based+1
+                        ws.delete_rows(i + 2)
                         _invalidate_hol_cache()
                         return True
                 return False
             except Exception as e:
                 st.error(f"ลบไม่ได้: {e}")
                 return False
+
+        def _delete_month_holidays(ss, year, month):
+            """ลบวันหยุดทั้งเดือนพร้อมกัน — ลบจากล่างขึ้นบนเพื่อไม่ให้ row index เลื่อน"""
+            try:
+                ws   = _get_holiday_ws(ss)
+                rows = _load_all_holidays(ss)
+                # หา row index (ใน sheet = i+2) ที่ตรงกับปี/เดือน
+                to_del = [
+                    i + 2
+                    for i, r in enumerate(rows)
+                    if str(r.get("ปี (พ.ศ.)", "")) == str(year)
+                    and str(r.get("เดือน", "")) == str(month)
+                ]
+                if not to_del:
+                    return 0
+                # ลบจากล่างขึ้นบน (row index ไม่กระทบแถวที่ยังไม่ถูกลบ)
+                for row_num in sorted(to_del, reverse=True):
+                    ws.delete_rows(row_num)
+                _invalidate_hol_cache()
+                return len(to_del)
+            except Exception as e:
+                st.error(f"ลบทั้งเดือนไม่ได้: {e}")
+                return 0
 
         # โหลดรายการ **ทั้งหมด** (ไม่กรองเดือน)
         h_data_all = _load_all_holidays(ss)
@@ -440,9 +474,17 @@ def render_payroll_page(gc: gspread.Client,
                 h_data_sorted,
                 key=lambda r: (int(r.get("ปี (พ.ศ.)", 0)), int(r.get("เดือน", 0)))
             ):
-                month_name = THAI_MONTHS.get(mo, str(mo))
-                st.markdown(f"📅 **{month_name} {yr}**")
-                for row in grp:
+                month_name = THAI_MONTHS[mo] if 1 <= mo <= 12 else str(mo)
+                grp_list = list(grp)
+                hdr_c, del_c = st.columns([6, 2])
+                hdr_c.markdown(f"📅 **{month_name} {yr}** ({len(grp_list)} วัน)")
+                if del_c.button(f"🗑️ ลบทั้งเดือน", key=f"del_month_{yr}_{mo}",
+                                 use_container_width=True):
+                    n = _delete_month_holidays(ss, yr, mo)
+                    if n:
+                        st.success(f"ลบ {n} วันของ{month_name} {yr} แล้วค่ะ")
+                        st.rerun()
+                for row in grp_list:
                     day_val   = row.get("วันที่", "")
                     row_yr    = int(row.get("ปี (พ.ศ.)", yr))
                     row_mo    = int(row.get("เดือน", mo))
