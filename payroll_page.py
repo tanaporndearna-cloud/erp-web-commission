@@ -1479,10 +1479,10 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                            month_yr: str,
                            ss_db: gspread.Spreadsheet | None = None) -> list:
     """
-    Fast batch version — บันทึกประวัติทุก sheet ใน 3 รอบใหญ่:
-      Phase 1: อ่านทุก sheet ด้วย batch_get (~5 API calls แทน 288)
-      Phase 2: copyPaste ทุก sheet ใน batch เดียว (chunk 50)
-      Phase 3: write values ทุก sheet (batch)
+    บันทึกประวัติทุก sheet — copy formatting (ตาราง/สี) แต่เขียน values เท่านั้น (ไม่มีสูตร):
+      Phase 1: อ่านทุก sheet ด้วย batch_get (~3 API calls)
+      Phase 2: copyPaste PASTE_FORMAT (เส้นตาราง/สี/header เท่านั้น — ไม่มีสูตร)
+      Phase 3: write values ทับ (RAW mode)
     """
     COL_HIST_START = 13
     COL_HIST_END   = 25
@@ -1491,7 +1491,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
     CHUNK          = 100   # max ranges per batch_get call
 
     results      = []
-    copy_reqs    = []
+    copy_reqs    = []   # สำหรับ PASTE_FORMAT เท่านั้น
     write_tasks  = []
 
     # ── Phase 1a: โหลด worksheet objects ทุกชีตพร้อมกัน (1 API call) ───
@@ -1554,13 +1554,14 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         )
 
     # ── Phase 1d: batch-read source ranges ทุกชีตพร้อมกัน (~1-2 calls) ─
+    # ส่ง params เป็น dict เพื่อให้ได้ค่า formatted (ไม่ใช่สูตร)
     src_data: dict[str, list] = {}
     for i in range(0, len(valid_names), CHUNK):
         chunk_names  = valid_names[i:i + CHUNK]
         chunk_ranges = src_ranges_list[i:i + CHUNK]
         try:
             resp = _sheets_retry(ss.values_batch_get, chunk_ranges,
-                                  valueRenderOption="FORMATTED_VALUE")
+                                  {"valueRenderOption": "FORMATTED_VALUE"})
             for name, vr in zip(chunk_names,
                                   resp.get("valueRanges", [])):
                 src_data[name] = vr.get("values", [])
@@ -1568,11 +1569,12 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             for name in chunk_names:
                 src_data[name] = []
 
-    # ── Phase 1e: สร้าง copy_reqs + write_tasks ─────────────────────
+    # ── Phase 1e: สร้าง copy_reqs (format only) + write_tasks ──────────
     for sheet_name in valid_names:
         paste_start, paste_end, ws = paste_info[sheet_name]
         src_values = src_data.get(sheet_name, [])
 
+        # PASTE_FORMAT: copy เส้นตาราง/สี/header style — ไม่มีสูตร ไม่มี value
         copy_reqs.append((sheet_name, {
             "copyPaste": {
                 "source": {
@@ -1589,7 +1591,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                     "startColumnIndex": paste_start - 1,
                     "endColumnIndex"  : paste_end - 1,
                 },
-                "pasteType"       : "PASTE_NORMAL",
+                "pasteType"       : "PASTE_FORMAT",   # formatting เท่านั้น — ไม่มีสูตร
                 "pasteOrientation": "NORMAL",
             }
         }))
@@ -1603,8 +1605,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                         "msg": f"บันทึกประวัติ {month_yr} ที่คอลัมน์ "
                                f"{col_letter(paste_start)} เรียบร้อยค่ะ"})
 
-    # ── Phase 2: batch copyPaste ทุก sheet พร้อมกัน (chunk 50) ────────
-    # ถ้า batch ล้มเหลว → fallback ทำทีละชีต เพื่อ isolate ว่าชีตไหนพัง
+    # ── Phase 2: batch copyPaste PASTE_FORMAT (เส้นตาราง/สีเท่านั้น) ──────
     if copy_reqs:
         reqs_only  = [r for _, r in copy_reqs]
         names_only = [n for n, _ in copy_reqs]
@@ -1614,7 +1615,6 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             try:
                 _sheets_retry(ss.batch_update, {"requests": chunk})
             except Exception:
-                # Batch พัง → fallback ทีละชีต
                 for req, sname in zip(chunk, chunk_names):
                     try:
                         _sheets_retry(ss.batch_update, {"requests": [req]})
@@ -1622,9 +1622,9 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                         for r in results:
                             if r["sheet"] == sname:
                                 r["ok"]  = False
-                                r["msg"] = f"copyPaste ล้มเหลว: {e2}"
+                                r["msg"] = f"copy format ล้มเหลว: {e2}"
 
-    # ── Phase 3: write values ทับ destination (ไม่ sleep) ─────────────
+    # ── Phase 3: write values ทับ (RAW — ไม่มีสูตร) ────────────────────
     for ws, dst_a1, src_values, sheet_name, _ in write_tasks:
         try:
             _sheets_retry(ws.update, dst_a1, src_values,
