@@ -699,13 +699,13 @@ def _copy_sum_to_com(ss: gspread.Spreadsheet, src_sheet: str, dst_sheet: str) ->
 
 def _clear_attendance(ss: gspread.Spreadsheet, sheet_name: str) -> dict:
     """ล้างข้อมูลเวลาที่กรอกมือ
-    เฉพาะ col P-S (16-19) และ col X-Y (24-25) แถว 6-36 เท่านั้น
-    (คงสูตรไว้ — ไม่แตะ cell ที่เป็น formula)
-    ใช้ FORMULA render อย่างเดียว เพื่อลด API call จาก 4 → 2 ครั้ง
+    ล้างคอลัมน์ M-Y (13-25) ทั้งหมด แถว 6-36
+    (คงสูตรไว้ — ไม่แตะ cell ที่เป็น formula เช่น สาย, ขาด, ล่วงเวลา)
+    ใช้ FORMULA render อย่างเดียว เพื่อลด API call
     """
     ROW_START  = 6
     ROW_END    = 36
-    # กลุ่มคอลัมน์ที่ต้องล้าง: [(col_start, col_end), ...]  1-indexed
+    # กลุ่มคอลัมน์ที่ต้องล้าง: N-S (14-19) และ X-Y (24-25)
     COL_GROUPS = [(14, 19), (24, 25)]   # N-S, X-Y
 
     try:
