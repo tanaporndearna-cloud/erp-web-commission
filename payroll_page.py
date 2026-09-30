@@ -1431,7 +1431,7 @@ def _import_attendance(ss: gspread.Spreadsheet, sheet_name: str,
             _sheets_retry(ws.batch_update, updates,
                           value_input_option="USER_ENTERED")
 
-        # ── ไฮไลต์แถวที่หมายเหตุมีคำ "วันหยุด" N-Y สีเทา ───────────────
+        # ── ไฮไลต์แถวที่หมายเหตุ**ขึ้นต้นด้วย** "วันหยุด" N-Y สีเทา ─────────
         GRAY    = {"red": 211/255, "green": 211/255, "blue": 211/255}
         COL_N_0 = 13   # N (0-indexed)
         COL_Y_0 = 25   # Y+1 (0-indexed, exclusive)
@@ -1441,7 +1441,7 @@ def _import_attendance(ss: gspread.Spreadsheet, sheet_name: str,
             if date_key not in att_map:
                 continue
             note = str(att_map[date_key].get("หมายเหตุ", ""))
-            if "วันหยุด" in note:
+            if note.startswith("วันหยุด"):
                 holiday_requests.append({
                     "repeatCell": {
                         "range": {
