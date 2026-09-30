@@ -1250,11 +1250,20 @@ def _read_attendance_file(file) -> pd.DataFrame | None:
 
             def norm_time(val: str) -> str:
                 """Normalize เวลา → "H:MM น." เสมอ
-                รองรับ: "8:14 น.", "08:14:00", "0.347222..." (Excel fraction), "7:37"
+                รองรับ: "8:14 น.", "08:14:00", "8:54:00 AM", "0.347222..." (Excel fraction), "7:37"
                 """
                 if not val:
                     return ""
-                # ตัด "น." และช่องว่างออกก่อน
+                # จัดการรูปแบบ AM/PM ก่อน เช่น "8:54:00 AM"
+                am_pm = re.match(r"^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)$", val.strip(), re.IGNORECASE)
+                if am_pm:
+                    h, m, period = int(am_pm.group(1)), int(am_pm.group(2)), am_pm.group(3).upper()
+                    if period == "PM" and h != 12:
+                        h += 12
+                    elif period == "AM" and h == 12:
+                        h = 0
+                    return f"{h}:{m:02d} น."
+                # ตัด "น." และช่องว่างออก
                 t = val.replace("น.", "").replace("น", "").strip()
                 # Excel เก็บเวลาเป็น float fraction เช่น 0.347222 = 08:20
                 try:
