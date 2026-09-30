@@ -435,20 +435,19 @@ def render_payroll_page(gc: gspread.Client,
                 return False
 
         def _delete_month_holidays(ss, year, month):
-            """ลบวันหยุดทั้งเดือนพร้อมกัน — ลบจากล่างขึ้นบนเพื่อไม่ให้ row index เลื่อน"""
+            """ลบวันหยุดทั้งเดือนพร้อมกัน — ใช้ get_all_values เพื่อได้ row index จริง"""
             try:
-                ws   = _get_holiday_ws(ss)
-                rows = _load_all_holidays(ss)
-                # หา row index (ใน sheet = i+2) ที่ตรงกับปี/เดือน
-                to_del = [
-                    i + 2
-                    for i, r in enumerate(rows)
-                    if str(r.get("ปี (พ.ศ.)", "")) == str(year)
-                    and str(r.get("เดือน", "")) == str(month)
-                ]
+                ws       = _get_holiday_ws(ss)
+                all_vals = ws.get_all_values()  # row 0 = header
+                to_del   = []
+                for i, row in enumerate(all_vals):
+                    if i == 0:
+                        continue  # skip header
+                    if len(row) >= 3 and str(row[0]) == str(year) and str(row[1]) == str(month):
+                        to_del.append(i + 1)   # sheet row = 1-based index
                 if not to_del:
                     return 0
-                # ลบจากล่างขึ้นบน (row index ไม่กระทบแถวที่ยังไม่ถูกลบ)
+                # ลบจากล่างขึ้นบน ไม่ให้ index เลื่อน
                 for row_num in sorted(to_del, reverse=True):
                     ws.delete_rows(row_num)
                 _invalidate_hol_cache()
