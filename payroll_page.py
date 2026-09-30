@@ -351,6 +351,10 @@ def render_payroll_page(gc: gspread.Client,
         _def_month = _now.month
         _def_year  = _now.year + 543   # CE → BE
 
+        # ดึงค่าเดือน/ปีจาก session_state (หรือ default) เพื่อใช้โหลดข้อมูลก่อน render widget
+        h_month = int(st.session_state.get("h_month", _def_month))
+        h_year  = int(st.session_state.get("h_year",  _def_year))
+
         # ── อ่านวันหยุดจาก Google Sheet ──
         HOLIDAY_SHEET = "วันหยุดประเพณี"
 
