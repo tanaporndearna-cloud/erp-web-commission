@@ -226,10 +226,11 @@ def render_payroll_page(gc: gspread.Client,
                         # ── FAST BATCH MODE สำหรับ history ──────────────────
                         month_yr    = f"{auto_month}/{auto_year}"
                         sheet_names = [sh_pay for _, sh_pay in pairs]
-                        status_text.info(
-                            f"⏳ กำลังบันทึกประวัติ {len(sheet_names)} Sheet พร้อมกัน..."
+                        batch_results = _export_history_batch(
+                            ss, sheet_names, month_yr, ss_db,
+                            status_text=status_text,
+                            progress_bar=progress_bar,
                         )
-                        batch_results = _export_history_batch(ss, sheet_names, month_yr, ss_db)
                         for idx2, r in enumerate(batch_results):
                             progress_bar.progress((idx2 + 1) / len(pairs))
                             if not r["ok"]:
@@ -1477,7 +1478,8 @@ def _export_history(ss: gspread.Spreadsheet, sheet_name: str,
 
 def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                            month_yr: str,
-                           ss_db: gspread.Spreadsheet | None = None) -> list:
+                           ss_db: gspread.Spreadsheet | None = None,
+                           status_text=None, progress_bar=None) -> list:
     """
     บันทึกประวัติทุก sheet — copy formatting (ตาราง/สี) แต่เขียน values เท่านั้น (ไม่มีสูตร):
       Phase 1: อ่านทุก sheet ด้วย batch_get (~3 API calls)
@@ -1493,12 +1495,20 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
     results      = []
     copy_reqs    = []   # สำหรับ PASTE_FORMAT เท่านั้น
     write_tasks  = []
+    n_sheets     = len(sheet_names)
+
+    def _upd(pct: float, msg: str):
+        """อัปเดต progress bar + status text (ถ้ามี)"""
+        if progress_bar  is not None: progress_bar.progress(min(pct, 1.0))
+        if status_text   is not None: status_text.info(msg)
 
     # ── Phase 1a: โหลด worksheet objects ทุกชีตพร้อมกัน (1 API call) ───
+    _upd(0.05, f"⏳ กำลังโหลดรายชื่อชีต ({n_sheets} Sheet)...")
     try:
         all_ws_list = _sheets_retry(ss.worksheets)
         ws_dict = {ws.title: ws for ws in all_ws_list}
     except Exception as e:
+        if status_text: status_text.empty()
         return [{"ok": False, "sheet": n, "msg": f"โหลด worksheets ล้มเหลว: {e}"}
                 for n in sheet_names]
 
@@ -1508,6 +1518,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         results.append({"ok": False, "sheet": n, "msg": "ไม่พบชีตในไฟล์"})
 
     # ── Phase 1b: batch-read แถว 1 ทุกชีต เพื่อหา last column (~1-2 calls) ─
+    _upd(0.15, f"⏳ กำลังตรวจสอบตำแหน่งประวัติ ({len(valid_names)} Sheet)...")
     row1_data: dict[str, list] = {}
     for i in range(0, len(valid_names), CHUNK):
         chunk_names  = valid_names[i:i + CHUNK]
@@ -1526,6 +1537,8 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
     paste_info: dict[str, tuple] = {}   # name → (paste_start, paste_end, ws)
     src_ranges_list: list[str]   = []
 
+    resize_reqs = []   # รวม resize ทุกชีตไว้ก่อน — batch ครั้งเดียว
+
     for sheet_name in valid_names:
         ws       = ws_dict[sheet_name]
         row1     = row1_data.get(sheet_name, [])
@@ -1540,12 +1553,18 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         paste_end   = paste_start + width
 
         if paste_end > ws.col_count:
-            try:
-                _sheets_retry(ws.resize,
-                              rows=max(ws.row_count, NUM_ROWS),
-                              cols=paste_end + 10)
-            except Exception:
-                pass
+            resize_reqs.append({
+                "updateSheetProperties": {
+                    "properties": {
+                        "sheetId"    : ws.id,
+                        "gridProperties": {
+                            "rowCount"   : max(ws.row_count, NUM_ROWS),
+                            "columnCount": paste_end + 10,
+                        },
+                    },
+                    "fields": "gridProperties.rowCount,gridProperties.columnCount",
+                }
+            })
 
         paste_info[sheet_name] = (paste_start, paste_end, ws)
         src_ranges_list.append(
@@ -1553,7 +1572,15 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             f":{col_letter(COL_HIST_END)}{NUM_ROWS}"
         )
 
+    # batch resize ทุกชีตที่ต้องขยายพร้อมกัน (1 API call แทน N calls)
+    if resize_reqs:
+        try:
+            _sheets_retry(ss.batch_update, {"requests": resize_reqs})
+        except Exception:
+            pass
+
     # ── Phase 1d: batch-read source ranges ทุกชีตพร้อมกัน (~1-2 calls) ─
+    _upd(0.35, f"⏳ กำลังอ่านข้อมูลเวลา ({len(valid_names)} Sheet)...")
     # ส่ง params เป็น dict เพื่อให้ได้ค่า formatted (ไม่ใช่สูตร)
     src_data: dict[str, list] = {}
     for i in range(0, len(valid_names), CHUNK):
@@ -1609,6 +1636,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                                f"{col_letter(paste_start)} เรียบร้อยค่ะ"})
 
     # ── Phase 2: batch copyPaste PASTE_FORMAT (เส้นตาราง/สีเท่านั้น) ──────
+    _upd(0.55, f"⏳ กำลัง copy ตาราง/สี ({len(valid_names)} Sheet)...")
     if copy_reqs:
         reqs_only  = [r for _, r in copy_reqs]
         names_only = [n for n, _ in copy_reqs]
@@ -1628,6 +1656,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                                 r["msg"] = f"copy format ล้มเหลว: {e2}"
 
     # ── Phase 3: batch write values ทุกชีตพร้อมกัน (1-2 API calls) ────────
+    _upd(0.75, f"⏳ กำลังบันทึกค่า ({len(write_tasks)} Sheet)...")
     WRITE_CHUNK = 50
     for i in range(0, len(write_tasks), WRITE_CHUNK):
         chunk = write_tasks[i:i + WRITE_CHUNK]
@@ -1654,4 +1683,5 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                             r["ok"]  = False
                             r["msg"] = str(e2)
 
+    _upd(0.95, "⏳ เกือบเสร็จแล้วค่ะ...")
     return results
