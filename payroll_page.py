@@ -351,16 +351,6 @@ def render_payroll_page(gc: gspread.Client,
         _def_month = _now.month
         _def_year  = _now.year + 543   # CE → BE
 
-        hcol1, hcol2 = st.columns([2, 3])
-        with hcol1:
-            h_month = st.selectbox("เดือน", list(range(1, 13)),
-                                   index=_def_month - 1,
-                                   format_func=lambda m: THAI_MONTHS[m],
-                                   key="h_month")
-        with hcol2:
-            h_year = st.number_input("ปี (พ.ศ.)", min_value=2560, max_value=2599,
-                                     value=_def_year, step=1, key="h_year")
-
         # ── อ่านวันหยุดจาก Google Sheet ──
         HOLIDAY_SHEET = "วันหยุดประเพณี"
 
@@ -444,16 +434,24 @@ def render_payroll_page(gc: gspread.Client,
 
         st.divider()
 
-        # ── ฟอร์มเพิ่มวันหยุด ──
-        st.markdown("**➕ เพิ่มวันหยุด** (กรอกช่วงวันที่ ถ้าวันเดียวให้ใส่วันเริ่ม = วันสิ้นสุดค่ะ)")
-        f1, f2, f3 = st.columns([2, 2, 1])
+        # ── ฟอร์มเพิ่มวันหยุด — วันที่เริ่ม / วันที่สิ้นสุด / เดือน / ปี / ปุ่ม บรรทัดเดียว ──
+        st.markdown("**➕ เพิ่มวันหยุด**")
+        f1, f2, f3, f4, f5 = st.columns([1, 1, 2, 1, 1])
         with f1:
             day_start = st.number_input("วันที่เริ่ม", min_value=1, max_value=31,
                                         value=1, step=1, key="new_hday_start")
         with f2:
-            day_end = st.number_input("วันที่สิ้นสุด", min_value=1, max_value=31,
+            day_end = st.number_input("ถึงวันที่", min_value=1, max_value=31,
                                       value=1, step=1, key="new_hday_end")
         with f3:
+            h_month = st.selectbox("เดือน", list(range(1, 13)),
+                                   index=_def_month - 1,
+                                   format_func=lambda m: THAI_MONTHS[m],
+                                   key="h_month")
+        with f4:
+            h_year = st.number_input("ปี (พ.ศ.)", min_value=2560, max_value=2599,
+                                     value=_def_year, step=1, key="h_year")
+        with f5:
             st.write("")
             st.write("")
             if st.button("เพิ่ม", key="btn_add_hol", use_container_width=True):
