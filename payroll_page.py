@@ -438,12 +438,13 @@ def render_payroll_page(gc: gspread.Client,
 
         st.divider()
 
-        # ── ฟอร์มเพิ่มวันหยุด — วันที่ / เดือน / ปี / ปุ่ม บรรทัดเดียว ──
+        # ── ฟอร์มเพิ่มวันหยุด — วันที่ (หลายวัน) / เดือน / ปี / ปุ่ม บรรทัดเดียว ──
         st.markdown("**➕ เพิ่มวันหยุด**")
-        f1, f2, f3, f4 = st.columns([1, 2, 1, 1])
+        f1, f2, f3, f4 = st.columns([2, 2, 1, 1])
         with f1:
-            new_day = st.number_input("วันที่", min_value=1, max_value=31,
-                                      value=1, step=1, key="new_hday")
+            new_days_str = st.text_input("วันที่ (คั่นด้วยจุลภาค เช่น 5, 17, 18)",
+                                         placeholder="5, 17, 18",
+                                         key="new_hdays")
         with f2:
             h_month = st.selectbox("เดือน", list(range(1, 13)),
                                    index=h_month - 1,
@@ -456,12 +457,29 @@ def render_payroll_page(gc: gspread.Client,
             st.write("")
             st.write("")
             if st.button("เพิ่ม", key="btn_add_hol", use_container_width=True):
-                ok, msg = _add_holiday(ss, int(h_year), int(h_month), int(new_day))
-                if ok:
-                    st.success(f"✅ เพิ่มวันที่ {new_day} {THAI_MONTHS[int(h_month)]} {int(h_year)} สำเร็จค่ะ")
-                    st.rerun()
+                # แยกวันที่จาก text
+                raw_days = [d.strip() for d in new_days_str.replace("،", ",").split(",") if d.strip()]
+                if not raw_days:
+                    st.warning("กรุณากรอกวันที่ค่ะ")
                 else:
-                    st.error(f"❌ {msg}")
+                    invalid, added, skipped = [], [], []
+                    for d_str in raw_days:
+                        if not d_str.isdigit() or not (1 <= int(d_str) <= 31):
+                            invalid.append(d_str)
+                            continue
+                        ok, msg = _add_holiday(ss, int(h_year), int(h_month), int(d_str))
+                        if ok:
+                            added.append(d_str)
+                        else:
+                            skipped.append(d_str)
+                    if invalid:
+                        st.error(f"❌ ค่าไม่ถูกต้อง: {', '.join(invalid)}")
+                    if added:
+                        st.success(f"✅ เพิ่มวันที่ {', '.join(added)} {THAI_MONTHS[int(h_month)]} {int(h_year)} สำเร็จค่ะ")
+                    if skipped:
+                        st.warning(f"⚠️ วันที่ {', '.join(skipped)} มีอยู่แล้ว ข้ามไปค่ะ")
+                    if added:
+                        st.rerun()
 
 
 # ── Backend: ERP Import ──────────────────────────────────────────
