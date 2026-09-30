@@ -1553,11 +1553,25 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             results.append({"ok": False, "sheet": sheet_name, "msg": str(e)})
 
     # ── Phase 2: batch copyPaste ทุก sheet พร้อมกัน (chunk 50) ────────
+    # ถ้า batch ล้มเหลว → fallback ทำทีละชีต เพื่อ isolate ว่าชีตไหนพัง
     if copy_reqs:
-        reqs_only = [r for _, r in copy_reqs]
+        reqs_only  = [r for _, r in copy_reqs]
+        names_only = [n for n, _ in copy_reqs]
         for i in range(0, len(reqs_only), 50):
-            chunk = reqs_only[i:i + 50]
-            _sheets_retry(ss.batch_update, {"requests": chunk})
+            chunk       = reqs_only[i:i + 50]
+            chunk_names = names_only[i:i + 50]
+            try:
+                _sheets_retry(ss.batch_update, {"requests": chunk})
+            except Exception:
+                # Batch พัง → fallback ทีละชีต
+                for req, sname in zip(chunk, chunk_names):
+                    try:
+                        _sheets_retry(ss.batch_update, {"requests": [req]})
+                    except Exception as e2:
+                        for r in results:
+                            if r["sheet"] == sname:
+                                r["ok"]  = False
+                                r["msg"] = f"copyPaste ล้มเหลว: {e2}"
 
     # ── Phase 3: write values ทับ destination (ไม่ sleep) ─────────────
     for ws, dst_a1, src_values, sheet_name, _ in write_tasks:
