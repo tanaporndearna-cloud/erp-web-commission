@@ -222,20 +222,40 @@ def render_payroll_page(gc: gspread.Client,
                     progress_bar  = st.progress(0)
                     status_text   = st.empty()
 
+                    if do_history:
+                        # ── FAST BATCH MODE สำหรับ history ──────────────────
+                        month_yr    = f"{auto_month}/{auto_year}"
+                        sheet_names = [sh_pay for _, sh_pay in pairs]
+                        status_text.info(
+                            f"⏳ กำลังบันทึกประวัติ {len(sheet_names)} Sheet พร้อมกัน..."
+                        )
+                        batch_results = _export_history_batch(ss, sheet_names, month_yr, ss_db)
+                        for idx2, r in enumerate(batch_results):
+                            progress_bar.progress((idx2 + 1) / len(pairs))
+                            if not r["ok"]:
+                                errors.append(f"{r['sheet']}: บันทึกประวัติไม่ได้ — {r['msg']}")
+                                fail_count += 1
+                            else:
+                                success_count += 1
+                        status_text.empty()
+                        if fail_count == 0:
+                            st.success(f"✅ บันทึกประวัติครบ {success_count} Sheet ค่ะ")
+                        else:
+                            st.warning(f"⚠️ เสร็จ {success_count} / ล้มเหลว {fail_count} Sheet")
+                        if errors:
+                            with st.expander("❌ รายการที่มีปัญหา"):
+                                for err in errors:
+                                    st.text(err)
+                        return
+
                     for idx, (emp_id, sh_pay) in enumerate(pairs):
-                        label = "บันทึกประวัติ" if do_history else "ประมวลผล"
+                        label = "ประมวลผล"
                         status_text.info(
                             f"⏳ กำลัง{label} Sheet **{sh_pay}** ({idx+1}/{len(pairs)})..."
                         )
                         try:
-                            if do_history:
-                                month_yr = f"{auto_month}/{auto_year}"
-                                r = _export_history(ss, sh_pay, month_yr, ss_db)
-                                if not r["ok"]:
-                                    errors.append(f"{sh_pay}: บันทึกประวัติไม่ได้ — {r['msg']}")
-                                    fail_count += 1
-                                else:
-                                    success_count += 1
+                            if False:   # placeholder — history ถูกจัดการข้างบนแล้ว
+                                pass
                             else:
                                 emp_rows = att_df[att_df["รหัสพนักงาน"] == emp_id].to_dict("records")
 
@@ -1449,82 +1469,105 @@ def _export_history(ss: gspread.Spreadsheet, sheet_name: str,
     """
     บันทึกประวัติเงินเดือน — copy คอลัมน์ M–Y (col 13–25) จากชีตพนักงาน
     แล้ววางต่อในชีตเดิม โดยเว้น 1 คอลัมน์จากข้อมูลล่าสุด
+    (single-sheet wrapper — ใช้ _export_history_batch สำหรับ bulk)
     """
-    COL_HIST_START = 13   # M (1-indexed)
-    COL_HIST_END   = 25   # Y (1-indexed)
+    results = _export_history_batch(ss, [sheet_name], month_yr, ss_db)
+    return results[0] if results else {"ok": False, "msg": "ไม่มีข้อมูล"}
 
-    try:
-        NUM_ROWS = 100   # copy row 1–100 ทั้งหมด (รวม "มาสาย" และ section ด้านล่าง)
-        width    = COL_HIST_END - COL_HIST_START + 1
 
-        ws           = _sheets_retry(ss.worksheet, sheet_name)
-        src_sheet_id = ws.id
+def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
+                           month_yr: str,
+                           ss_db: gspread.Spreadsheet | None = None) -> list:
+    """
+    Fast batch version — บันทึกประวัติทุก sheet ใน 3 รอบใหญ่:
+      Phase 1: อ่านทุก sheet (ไม่ sleep)
+      Phase 2: copyPaste ทุก sheet ใน batch เดียว (chunk 50)
+      Phase 3: write values ทุก sheet (ไม่ sleep)
+    """
+    COL_HIST_START = 13
+    COL_HIST_END   = 25
+    NUM_ROWS       = 100
+    width          = COL_HIST_END - COL_HIST_START + 1
 
-        # ── หน่วงก่อน export history เพื่อไม่ให้ชน rate limit ────────
-        time.sleep(2)
+    results      = []
+    copy_reqs    = []   # (sheet_name, request_dict)
+    write_tasks  = []   # (ws, dst_a1, src_values, sheet_name)
 
-        # ── หา last used column (retry กัน 429) ───────────────────────
-        all_vals = _sheets_retry(ws.get_all_values)
-        last_col = COL_HIST_END
-        for row in all_vals:
-            for ci in range(len(row) - 1, -1, -1):
-                if row[ci].strip():
-                    if ci + 1 > last_col:
-                        last_col = ci + 1
-                    break
+    # ── Phase 1: อ่านแต่ละ sheet หา last column + src values ──────────
+    for sheet_name in sheet_names:
+        try:
+            ws = _sheets_retry(ss.worksheet, sheet_name)
 
-        paste_start = last_col + 2          # เว้น 1 คอลัมน์
-        paste_end   = paste_start + width   # exclusive
+            all_vals = _sheets_retry(ws.get_all_values)
+            last_col = COL_HIST_END
+            for row in all_vals:
+                for ci in range(len(row) - 1, -1, -1):
+                    if row[ci].strip():
+                        if ci + 1 > last_col:
+                            last_col = ci + 1
+                        break
 
-        # ── ขยาย Sheet ถ้าจำเป็น ──────────────────────────────────
-        if paste_end > ws.col_count:
-            _sheets_retry(ws.resize,
-                          rows=max(ws.row_count, NUM_ROWS),
-                          cols=paste_end + 10)
+            paste_start = last_col + 2
+            paste_end   = paste_start + width
 
-        src_range = {
-            "sheetId"         : src_sheet_id,
-            "startRowIndex"   : 0,
-            "endRowIndex"     : NUM_ROWS,
-            "startColumnIndex": COL_HIST_START - 1,   # 0-indexed
-            "endColumnIndex"  : COL_HIST_END,          # 0-indexed exclusive
-        }
-        dst_range = {
-            "sheetId"         : src_sheet_id,
-            "startRowIndex"   : 0,
-            "endRowIndex"     : NUM_ROWS,
-            "startColumnIndex": paste_start - 1,
-            "endColumnIndex"  : paste_end - 1,
-        }
+            if paste_end > ws.col_count:
+                _sheets_retry(ws.resize,
+                              rows=max(ws.row_count, NUM_ROWS),
+                              cols=paste_end + 10)
 
-        # ── Step 1: อ่านค่า source ก่อน paste ────────────────────────
-        src_a1 = (f"{col_letter(COL_HIST_START)}1:"
-                  f"{col_letter(COL_HIST_END)}{NUM_ROWS}")
-        src_values = _sheets_retry(ws.get, src_a1,
-                                   value_render_option="FORMATTED_VALUE")
-        time.sleep(1)   # หน่วงเล็กน้อยก่อน batch_update
+            src_a1     = (f"{col_letter(COL_HIST_START)}1:"
+                          f"{col_letter(COL_HIST_END)}{NUM_ROWS}")
+            src_values = _sheets_retry(ws.get, src_a1,
+                                       value_render_option="FORMATTED_VALUE")
 
-        # ── Step 2: PASTE_NORMAL — copy ทุกอย่างรวมสี+เส้น+รูป ──────────
-        body = {"requests": [{
-            "copyPaste": {
-                "source"          : src_range,
-                "destination"     : dst_range,
-                "pasteType"       : "PASTE_NORMAL",
-                "pasteOrientation": "NORMAL"
-            }
-        }]}
-        _sheets_retry(ss.batch_update, body)
-        time.sleep(1)   # หน่วงก่อน write values
+            copy_reqs.append((sheet_name, {
+                "copyPaste": {
+                    "source": {
+                        "sheetId"         : ws.id,
+                        "startRowIndex"   : 0,
+                        "endRowIndex"     : NUM_ROWS,
+                        "startColumnIndex": COL_HIST_START - 1,
+                        "endColumnIndex"  : COL_HIST_END,
+                    },
+                    "destination": {
+                        "sheetId"         : ws.id,
+                        "startRowIndex"   : 0,
+                        "endRowIndex"     : NUM_ROWS,
+                        "startColumnIndex": paste_start - 1,
+                        "endColumnIndex"  : paste_end - 1,
+                    },
+                    "pasteType"       : "PASTE_NORMAL",
+                    "pasteOrientation": "NORMAL",
+                }
+            }))
 
-        # ── Step 3: write source values ทับ destination ───────────────
-        dst_a1 = (f"{col_letter(paste_start)}1:"
-                  f"{col_letter(paste_end - 1)}{NUM_ROWS}")
-        if src_values:
+            if src_values:
+                dst_a1 = (f"{col_letter(paste_start)}1:"
+                          f"{col_letter(paste_end - 1)}{NUM_ROWS}")
+                write_tasks.append((ws, dst_a1, src_values, sheet_name, paste_start))
+
+            results.append({"ok": True, "sheet": sheet_name,
+                            "msg": f"บันทึกประวัติ {month_yr} ที่คอลัมน์ "
+                                   f"{col_letter(paste_start)} เรียบร้อยค่ะ"})
+        except Exception as e:
+            results.append({"ok": False, "sheet": sheet_name, "msg": str(e)})
+
+    # ── Phase 2: batch copyPaste ทุก sheet พร้อมกัน (chunk 50) ────────
+    if copy_reqs:
+        reqs_only = [r for _, r in copy_reqs]
+        for i in range(0, len(reqs_only), 50):
+            chunk = reqs_only[i:i + 50]
+            _sheets_retry(ss.batch_update, {"requests": chunk})
+
+    # ── Phase 3: write values ทับ destination (ไม่ sleep) ─────────────
+    for ws, dst_a1, src_values, sheet_name, _ in write_tasks:
+        try:
             _sheets_retry(ws.update, dst_a1, src_values,
                           value_input_option="RAW")
+        except Exception as e:
+            for r in results:
+                if r["sheet"] == sheet_name:
+                    r["ok"]  = False
+                    r["msg"] = str(e)
 
-        return {"ok": True,
-                "msg": (f"บันทึกประวัติ {month_yr} ที่คอลัมน์ "
-                        f"{col_letter(paste_start)} ในชีต \"{sheet_name}\" เรียบร้อยค่ะ")}
-    except Exception as e:
-        return {"ok": False, "msg": str(e)}
+    return results
