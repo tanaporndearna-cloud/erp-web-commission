@@ -1183,9 +1183,13 @@ def _generate_dates(ss: gspread.Spreadsheet, sheet_name: str,
                     updates.append({"range": f"{col_letter(dnc)}{row}",
                                     "values": [[DAY_EN_LIST[day_idx]]]})
             # ล้างแถวที่เกิน num_rows (กรณีเดือนนี้สั้นกว่าเดือนที่แล้ว)
-            # เช่น กรกฎาคม 30 วัน แต่สิงหาคม 31 วัน → ต้องล้าง row 36 ออก
+            # เช่น กรกฎาคม 31 วัน แต่มิถุนายน 30 วัน → ต้องล้าง row 36 ออก
+            # จำกัดแค่ row 36 (DATA_START+30) ไม่แตะ row 37+ ซึ่งเป็น label/สรุป
+            _MAX_DATA_ROW = CFG["DATA_START"] + 30  # สูงสุด 31 วัน → row 36
             for extra in range(num_rows, CFG["DATA_END"] - CFG["DATA_START"] + 1):
                 extra_row = CFG["DATA_START"] + extra
+                if extra_row > _MAX_DATA_ROW:       # ห้ามลบ row 37+ (label ไม่ใช่วัน)
+                    break
                 updates.append({"range": f"{col_letter(dc)}{extra_row}",
                                 "values": [[""]]})
                 if dnc:
@@ -1594,14 +1598,26 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             pass   # freeze ไม่ได้ก็ข้าม — ไม่หยุดทั้งกระบวนการ
 
     # เขียนทับ history เก่าด้วย RAW (ตัดสูตรออก → static value)
-    # ใช้ ws.update() ทีละชีตเลย — เสถียรกว่า batch (batch มีปัญหา gspread version)
-    for entry in freeze_write_data:
-        try:
-            _sheets_retry(entry["ws"].update,
-                          entry["short_range"], entry["values"],
-                          value_input_option="RAW")
-        except Exception:
-            pass   # ถ้าพัง ข้ามไป — ไม่หยุดทั้งกระบวนการ
+    # ใช้ values_batch_update ครั้งเดียวแทน ws.update() ทีละชีต → เร็วกว่ามาก
+    if freeze_write_data:
+        batch_freeze = [{"range": e["range"], "values": e["values"]}
+                        for e in freeze_write_data]
+        for i in range(0, len(batch_freeze), CHUNK):
+            chunk = batch_freeze[i:i + CHUNK]
+            try:
+                _sheets_retry(ss.values_batch_update, {
+                    "valueInputOption": "RAW",
+                    "data"            : chunk,
+                })
+            except Exception:
+                # fallback: เขียนทีละชีตถ้า batch พัง
+                for entry in freeze_write_data[i:i + CHUNK]:
+                    try:
+                        _sheets_retry(entry["ws"].update,
+                                      entry["short_range"], entry["values"],
+                                      value_input_option="RAW")
+                    except Exception:
+                        pass
 
     # ── Phase 1c: คำนวณ paste position + resize ถ้าจำเป็น ────────────
     paste_info: dict[str, tuple] = {}   # name → (paste_start, paste_end, ws)
