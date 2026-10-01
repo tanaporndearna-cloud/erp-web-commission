@@ -856,11 +856,15 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
                                          CFG["HDR_DATE"], CFG["HDR_DAY_NAME"],
                                          CFG["HDR_TIME_IN"], CFG["HDR_TIME_OUT"],
                                          CFG["HDR_NOTE"])
-            date_cols     = cols[CFG["HDR_DATE"]]
-            day_name_cols = cols[CFG["HDR_DAY_NAME"]]
-            ti_cols       = cols[CFG["HDR_TIME_IN"]]
-            to_cols       = cols[CFG["HDR_TIME_OUT"]]
-            note_cols     = cols[CFG["HDR_NOTE"]]
+            # ── กรองเฉพาะ column ใน template (A-Y = col 1-25) ───────────
+            # row 5 อ่านจาก A5:ZZ5 ดังนั้นได้ header ทั้ง template + history block
+            # ต้องตัด col > 25 ออก เพื่อไม่ให้เขียนทับ history block เก่า
+            _MAX_TMPL_COL = 25
+            date_cols     = [c for c in cols[CFG["HDR_DATE"]]     if c <= _MAX_TMPL_COL]
+            day_name_cols = [c for c in cols[CFG["HDR_DAY_NAME"]] if c <= _MAX_TMPL_COL]
+            ti_cols       = [c for c in cols[CFG["HDR_TIME_IN"]]  if c <= _MAX_TMPL_COL]
+            to_cols       = [c for c in cols[CFG["HDR_TIME_OUT"]] if c <= _MAX_TMPL_COL]
+            note_cols     = [c for c in cols[CFG["HDR_NOTE"]]     if c <= _MAX_TMPL_COL]
 
             # ── validate โครงสร้าง ────────────────────────────
             if not date_cols:
@@ -1054,10 +1058,8 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
         )
         if all_value_upd:
             try:
-                _sheets_retry(ss.values_batch_update, {
-                    "valueInputOption": "USER_ENTERED",
-                    "data"            : all_value_upd
-                })
+                _sheets_retry(ss.values_batch_update, all_value_upd,
+                              value_input_option="USER_ENTERED")
             except Exception as e:
                 # batch write ล้มเหลว → ส่ง chunk นี้ไป slow mode
                 st.warning(
@@ -1143,8 +1145,10 @@ def _generate_dates(ss: gspread.Spreadsheet, sheet_name: str,
         if headers is None:
             headers = _sheets_retry(ws.row_values, CFG["HEADER_ROW"])
         cols          = find_col_indices(headers, CFG["HDR_DATE"], CFG["HDR_DAY_NAME"])
-        date_cols     = cols[CFG["HDR_DATE"]]
-        day_name_cols = cols[CFG["HDR_DAY_NAME"]]
+        # กรองเฉพาะ template area (A-Y = col 1-25) ไม่ให้เขียนทับ history block
+        _MAX_TMPL_COL = 25
+        date_cols     = [c for c in cols[CFG["HDR_DATE"]]     if c <= _MAX_TMPL_COL]
+        day_name_cols = [c for c in cols[CFG["HDR_DAY_NAME"]] if c <= _MAX_TMPL_COL]
 
         if not date_cols:
             return {"ok": False,
@@ -1334,11 +1338,13 @@ def _import_attendance(ss: gspread.Spreadsheet, sheet_name: str,
                                      CFG["HDR_DATE"], CFG["HDR_TIME_IN"],
                                      CFG["HDR_TIME_OUT"], CFG["HDR_NOTE"],
                                      CFG["HDR_DAY_NAME"])
-        date_cols = cols[CFG["HDR_DATE"]]
-        ti_cols   = cols[CFG["HDR_TIME_IN"]]
-        to_cols   = cols[CFG["HDR_TIME_OUT"]]
-        note_cols = cols[CFG["HDR_NOTE"]]
-        day_cols  = cols[CFG["HDR_DAY_NAME"]]
+        # กรองเฉพาะ template area (A-Y = col 1-25) ไม่ให้เขียนทับ history block
+        _MAX_TMPL_COL = 25
+        date_cols = [c for c in cols[CFG["HDR_DATE"]]     if c <= _MAX_TMPL_COL]
+        ti_cols   = [c for c in cols[CFG["HDR_TIME_IN"]]  if c <= _MAX_TMPL_COL]
+        to_cols   = [c for c in cols[CFG["HDR_TIME_OUT"]] if c <= _MAX_TMPL_COL]
+        note_cols = [c for c in cols[CFG["HDR_NOTE"]]     if c <= _MAX_TMPL_COL]
+        day_cols  = [c for c in cols[CFG["HDR_DAY_NAME"]] if c <= _MAX_TMPL_COL]
 
         if not date_cols:
             return {"ok": False,
