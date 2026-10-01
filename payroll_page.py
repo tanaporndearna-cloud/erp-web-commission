@@ -1058,8 +1058,10 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
         )
         if all_value_upd:
             try:
-                _sheets_retry(ss.values_batch_update, all_value_upd,
-                              value_input_option="USER_ENTERED")
+                _sheets_retry(ss.values_batch_update, {
+                    "valueInputOption": "USER_ENTERED",
+                    "data"            : all_value_upd
+                })
             except Exception as e:
                 # batch write ล้มเหลว → ส่ง chunk นี้ไป slow mode
                 st.warning(
