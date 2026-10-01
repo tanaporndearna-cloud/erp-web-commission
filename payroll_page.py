@@ -906,7 +906,7 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
             # ใช้ range-based bulk clear แทน cell-by-cell
             # เพื่อล้างทุก cell รวมถึง cell ที่เป็น formula หรือ merged
             _row_s = CFG["DATA_START"]
-            _row_e = CFG["DATA_END"]
+            _row_e = 36   # ล้างเฉพาะแถวข้อมูลเวลา (6-36) — แถว 37+ มี label template เช่น "มาสาย","ขาดงาน"
             _num_r = _row_e - _row_s + 1
             all_value_upd.append({
                 "range" : f"'{esh}'!N{_row_s}:S{_row_e}",
