@@ -1773,26 +1773,37 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                                     r["ok"]  = False
                                     r["msg"] = f"copy format ล้มเหลว: {e2}"
 
-    # ── Phase 3: write values ทุกชีต (ws.update ทีละชีต — เสถียรทุก gspread version) ──
+    # ── Phase 3: write values ทุกชีต — batch ครั้งเดียวแทนทีละ Sheet ──────
     _upd(0.75, f"⏳ กำลังบันทึกค่า ({len(write_tasks)} Sheet)...")
+    batch_data    = []   # รวม data + bookmark ทุกชีต
+    sheet_by_range: dict[str, str] = {}   # range → sheet_name (สำหรับ error report)
     for ws, dst_a1, src_values, sheet_name, _, bm_short in write_tasks:
-        # เขียน history data
+        batch_data.append({"range": dst_a1,  "values": src_values})
+        batch_data.append({"range": bm_short, "values": [[month_yr]]})
+        sheet_by_range[dst_a1]  = sheet_name
+        sheet_by_range[bm_short] = sheet_name
+
+    for i in range(0, len(batch_data), CHUNK * 2):
+        chunk = batch_data[i:i + CHUNK * 2]
         try:
-            _sheets_retry(ws.update, dst_a1, src_values,
-                          value_input_option="RAW")
-        except Exception as e2:
-            for r in results:
-                if r["sheet"] == sheet_name:
-                    r["ok"]  = False
-                    r["msg"] = str(e2)
-            continue   # ถ้า data ไม่ได้ ข้าม bookmark ด้วย
-        # เขียน bookmark (month_yr) ที่คอลัมน์สุดท้ายของ block แถว 1
-        # bookmark สำคัญมาก — ถ้าขาดหายครั้งถัดไปจะหา last_col ไม่เจอ → เขียนทับ history
-        try:
-            _sheets_retry(ws.update, bm_short, [[month_yr]],
-                          value_input_option="RAW")
-        except Exception:
-            pass   # bookmark พังก็ยังดีกว่า data ไม่ได้
+            _sheets_retry(ss.values_batch_update, {
+                "valueInputOption": "RAW",
+                "data"            : chunk,
+            })
+        except Exception as e_batch:
+            # fallback: เขียนทีละ entry ถ้า batch พัง
+            for entry in chunk:
+                sname = sheet_by_range.get(entry["range"], "")
+                try:
+                    _sheets_retry(ss.values_update,
+                                  entry["range"],
+                                  params={"valueInputOption": "RAW"},
+                                  body={"values": entry["values"]})
+                except Exception as e2:
+                    for r in results:
+                        if r["sheet"] == sname:
+                            r["ok"]  = False
+                            r["msg"] = str(e2)
 
     _upd(0.95, "⏳ เกือบเสร็จแล้วค่ะ...")
     return results
