@@ -1575,22 +1575,36 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                     ec = sc + max_width - 1
                     # บันทึก last_col จริงสำหรับ Phase 1c (ป้องกัน paste_start เขียนทับ history เก่า)
                     frozen_last_col[sname] = ec
+                    short_range = f"{col_letter(sc)}1:{col_letter(ec)}{NUM_ROWS}"
                     freeze_write_data.append({
-                        "range" : (f"'{ws_title}'!"
-                                   f"{col_letter(sc)}1:{col_letter(ec)}{NUM_ROWS}"),
-                        "values": vals,
+                        "range"      : f"'{ws_title}'!{short_range}",
+                        "values"     : vals,
+                        "ws"         : ws_dict[sname],
+                        "short_range": short_range,
                     })
         except Exception:
             pass   # freeze ไม่ได้ก็ข้าม — ไม่หยุดทั้งกระบวนการ
 
+    # เขียนทับ history เก่าด้วย RAW (ตัดสูตรออก → static value)
+    # ใช้ batch ก่อน ถ้าพังให้ fallback ws.update() ทีละชีต
     for i in range(0, len(freeze_write_data), CHUNK):
+        chunk_freeze = freeze_write_data[i:i + CHUNK]
         try:
             _sheets_retry(ss.values_batch_update, {
                 "valueInputOption": "RAW",
-                "data"            : freeze_write_data[i:i + CHUNK],
+                "data": [{"range": e["range"], "values": e["values"]}
+                         for e in chunk_freeze],
             })
         except Exception:
-            pass
+            # batch_update อาจไม่รองรับ dict argument ใน gspread บางเวอร์ชัน
+            # fallback: ใช้ ws.update() ทีละชีต
+            for entry in chunk_freeze:
+                try:
+                    _sheets_retry(entry["ws"].update,
+                                  entry["short_range"], entry["values"],
+                                  value_input_option="RAW")
+                except Exception:
+                    pass   # ถ้า fallback ก็พัง ข้ามไป — ไม่หยุดทั้งกระบวนการ
 
     # ── Phase 1c: คำนวณ paste position + resize ถ้าจำเป็น ────────────
     paste_info: dict[str, tuple] = {}   # name → (paste_start, paste_end, ws)
