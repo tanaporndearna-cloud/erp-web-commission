@@ -1534,6 +1534,59 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             for name in chunk_names:
                 header_data[name] = []
 
+    # ── Phase 1b.5: Freeze history เก่า → แปลง formula → static value ─────
+    # ป้องกันไม่ให้ history เก่าที่เป็น formula เปลี่ยนตามข้อมูลเดือนใหม่
+    # อ่านด้วย FORMATTED_VALUE (ได้ค่าที่คำนวณแล้ว) แล้วเขียนทับด้วย RAW (ตัดสูตรออก)
+    _upd(0.22, f"⏳ กำลัง freeze history เก่า ({len(valid_names)} Sheet)...")
+    freeze_read_ranges : list[str]   = []
+    freeze_sheet_info  : list[tuple] = []   # (sheet_name, ws_title, start_col, end_col)
+
+    for sheet_name in valid_names:
+        ws   = ws_dict[sheet_name]
+        rows = header_data.get(sheet_name, [])
+        last_col = COL_HIST_END
+        for row in rows:
+            for ci in range(len(row) - 1, -1, -1):
+                if str(row[ci]).strip():
+                    if ci + 1 > last_col:
+                        last_col = ci + 1
+                    break
+        if last_col > COL_HIST_END:
+            freeze_read_ranges.append(
+                f"'{sheet_name}'!{col_letter(COL_HIST_END + 1)}1"
+                f":{col_letter(last_col)}{NUM_ROWS}"
+            )
+            freeze_sheet_info.append((sheet_name, ws.title, COL_HIST_END + 1, last_col))
+
+    if freeze_read_ranges:
+        freeze_write_data: list[dict] = []
+        for i in range(0, len(freeze_read_ranges), CHUNK):
+            chunk_ranges = freeze_read_ranges[i:i + CHUNK]
+            chunk_info   = freeze_sheet_info[i:i + CHUNK]
+            try:
+                resp = _sheets_retry(ss.values_batch_get, chunk_ranges,
+                                      {"valueRenderOption": "FORMATTED_VALUE"})
+                for (sname, ws_title, sc, ec), vr in zip(
+                        chunk_info, resp.get("valueRanges", [])):
+                    vals = vr.get("values", [])
+                    if vals:
+                        freeze_write_data.append({
+                            "range" : (f"'{ws_title}'!"
+                                       f"{col_letter(sc)}1:{col_letter(ec)}{NUM_ROWS}"),
+                            "values": vals,
+                        })
+            except Exception:
+                pass   # freeze ไม่ได้ก็ข้าม — ไม่หยุดทั้งกระบวนการ
+
+        for i in range(0, len(freeze_write_data), CHUNK):
+            try:
+                _sheets_retry(ss.values_batch_update, {
+                    "valueInputOption": "RAW",
+                    "data"            : freeze_write_data[i:i + CHUNK],
+                })
+            except Exception:
+                pass
+
     # ── Phase 1c: คำนวณ paste position + resize ถ้าจำเป็น ────────────
     paste_info: dict[str, tuple] = {}   # name → (paste_start, paste_end, ws)
     src_ranges_list: list[str]   = []
