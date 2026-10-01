@@ -1565,8 +1565,8 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         chunk_ranges = freeze_read_ranges[i:i + CHUNK]
         chunk_info   = freeze_sheet_info[i:i + CHUNK]
         try:
-            resp = _sheets_retry(ss.values_batch_get, chunk_ranges,
-                                  {"valueRenderOption": "FORMATTED_VALUE"})
+            # ไม่ส่ง params เพิ่ม — gspread default คือ FORMATTED_VALUE อยู่แล้ว
+            resp = _sheets_retry(ss.values_batch_get, chunk_ranges)
             for (sname, ws_title, sc), vr in zip(chunk_info, resp.get("valueRanges", [])):
                 vals = vr.get("values", [])
                 if vals:
@@ -1586,25 +1586,14 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             pass   # freeze ไม่ได้ก็ข้าม — ไม่หยุดทั้งกระบวนการ
 
     # เขียนทับ history เก่าด้วย RAW (ตัดสูตรออก → static value)
-    # ใช้ batch ก่อน ถ้าพังให้ fallback ws.update() ทีละชีต
-    for i in range(0, len(freeze_write_data), CHUNK):
-        chunk_freeze = freeze_write_data[i:i + CHUNK]
+    # ใช้ ws.update() ทีละชีตเลย — เสถียรกว่า batch (batch มีปัญหา gspread version)
+    for entry in freeze_write_data:
         try:
-            _sheets_retry(ss.values_batch_update, {
-                "valueInputOption": "RAW",
-                "data": [{"range": e["range"], "values": e["values"]}
-                         for e in chunk_freeze],
-            })
+            _sheets_retry(entry["ws"].update,
+                          entry["short_range"], entry["values"],
+                          value_input_option="RAW")
         except Exception:
-            # batch_update อาจไม่รองรับ dict argument ใน gspread บางเวอร์ชัน
-            # fallback: ใช้ ws.update() ทีละชีต
-            for entry in chunk_freeze:
-                try:
-                    _sheets_retry(entry["ws"].update,
-                                  entry["short_range"], entry["values"],
-                                  value_input_option="RAW")
-                except Exception:
-                    pass   # ถ้า fallback ก็พัง ข้ามไป — ไม่หยุดทั้งกระบวนการ
+            pass   # ถ้าพัง ข้ามไป — ไม่หยุดทั้งกระบวนการ
 
     # ── Phase 1c: คำนวณ paste position + resize ถ้าจำเป็น ────────────
     paste_info: dict[str, tuple] = {}   # name → (paste_start, paste_end, ws)
@@ -1667,8 +1656,8 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         chunk_names  = valid_names[i:i + CHUNK]
         chunk_ranges = src_ranges_list[i:i + CHUNK]
         try:
-            resp = _sheets_retry(ss.values_batch_get, chunk_ranges,
-                                  {"valueRenderOption": "FORMATTED_VALUE"})
+            # ไม่ส่ง params เพิ่ม — gspread default คือ FORMATTED_VALUE อยู่แล้ว
+            resp = _sheets_retry(ss.values_batch_get, chunk_ranges)
             for name, vr in zip(chunk_names,
                                   resp.get("valueRanges", [])):
                 src_data[name] = vr.get("values", [])
@@ -1715,7 +1704,9 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
 
             dst_a1 = (f"{col_letter(paste_start)}1:"
                       f"{col_letter(paste_end - 1)}{NUM_ROWS}")
-            write_tasks.append((ws, dst_a1, filtered, sheet_name, paste_start))
+            # bookmark_short: ใช้ใน fallback (ws.update ไม่ต้องการชื่อชีต)
+            bm_short = f"{col_letter(paste_end - 1)}1"
+            write_tasks.append((ws, dst_a1, filtered, sheet_name, paste_start, bm_short))
 
         # ── bookmark: เขียน month_yr ที่คอลัมน์สุดท้ายของ block แถว 1 ──────
         # ทำให้ครั้งถัดไปสแกนแถว 1-5 แล้วเจอ bookmark จะรู้ว่า block จบที่ไหน
@@ -1758,39 +1749,26 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                                     r["ok"]  = False
                                     r["msg"] = f"copy format ล้มเหลว: {e2}"
 
-    # ── Phase 3: batch write values ทุกชีตพร้อมกัน (1-2 API calls) ────────
+    # ── Phase 3: write values ทุกชีต (ws.update ทีละชีต — เสถียรทุก gspread version) ──
     _upd(0.75, f"⏳ กำลังบันทึกค่า ({len(write_tasks)} Sheet)...")
-    WRITE_CHUNK = 50
-    for i in range(0, len(write_tasks), WRITE_CHUNK):
-        chunk = write_tasks[i:i + WRITE_CHUNK]
-        batch_data = []
-        for ws, dst_a1, src_values, sheet_name, _ in chunk:
-            batch_data.append({
-                "range" : f"'{ws.title}'!{dst_a1}",
-                "values": src_values,
-            })
-        # รวม bookmark ของ chunk เดียวกันเข้าไปด้วย
-        for bm_range in bookmark_tasks[i:i + WRITE_CHUNK]:
-            batch_data.append({
-                "range" : bm_range,
-                "values": [[month_yr]],
-            })
+    for ws, dst_a1, src_values, sheet_name, _, bm_short in write_tasks:
+        # เขียน history data
         try:
-            _sheets_retry(ss.values_batch_update, {
-                "valueInputOption": "RAW",
-                "data"            : batch_data,
-            })
-        except Exception as e:
-            # batch พัง → fallback ทีละชีต
-            for ws, dst_a1, src_values, sheet_name, _ in chunk:
-                try:
-                    _sheets_retry(ws.update, dst_a1, src_values,
-                                  value_input_option="RAW")
-                except Exception as e2:
-                    for r in results:
-                        if r["sheet"] == sheet_name:
-                            r["ok"]  = False
-                            r["msg"] = str(e2)
+            _sheets_retry(ws.update, dst_a1, src_values,
+                          value_input_option="RAW")
+        except Exception as e2:
+            for r in results:
+                if r["sheet"] == sheet_name:
+                    r["ok"]  = False
+                    r["msg"] = str(e2)
+            continue   # ถ้า data ไม่ได้ ข้าม bookmark ด้วย
+        # เขียน bookmark (month_yr) ที่คอลัมน์สุดท้ายของ block แถว 1
+        # bookmark สำคัญมาก — ถ้าขาดหายครั้งถัดไปจะหา last_col ไม่เจอ → เขียนทับ history
+        try:
+            _sheets_retry(ws.update, bm_short, [[month_yr]],
+                          value_input_option="RAW")
+        except Exception:
+            pass   # bookmark พังก็ยังดีกว่า data ไม่ได้
 
     _upd(0.95, "⏳ เกือบเสร็จแล้วค่ะ...")
     return results
