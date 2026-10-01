@@ -1537,55 +1537,60 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
     # ── Phase 1b.5: Freeze history เก่า → แปลง formula → static value ─────
     # ป้องกันไม่ให้ history เก่าที่เป็น formula เปลี่ยนตามข้อมูลเดือนใหม่
     # อ่านด้วย FORMATTED_VALUE (ได้ค่าที่คำนวณแล้ว) แล้วเขียนทับด้วย RAW (ตัดสูตรออก)
+    #
+    # FIX v2: เดิมใช้ header_data (แถว 1-5) หา last_col ก่อน ถ้าไม่เจอก็ข้าม freeze
+    #          แต่ history เก่า (ที่มี formula) อาจมีข้อมูลแค่แถว 6-36 ไม่มีแถว 1-5
+    #          ทำให้ last_col ไม่เพิ่ม → freeze ไม่ถูกเรียก → history ยังมี formula อยู่
+    #          แก้: อ่าน cols COL_HIST_END+1 ถึง FREEZE_MAX_COL ทุกแถว (1-NUM_ROWS)
+    #          ถ้ามีข้อมูลก็เขียนทับด้วย RAW — ถ้าว่างก็ไม่มีผล
+    #          และเก็บ actual last_col ต่อ Phase 1c ด้วย เพื่อคำนวณ paste_start ที่ถูก
+    FREEZE_MAX_COL = 150   # ครอบคลุม history ได้ประมาณ 9 เดือน (13 cols × 9 = 117)
     _upd(0.22, f"⏳ กำลัง freeze history เก่า ({len(valid_names)} Sheet)...")
-    freeze_read_ranges : list[str]   = []
-    freeze_sheet_info  : list[tuple] = []   # (sheet_name, ws_title, start_col, end_col)
+
+    freeze_read_ranges: list[str]   = []
+    freeze_sheet_info : list[tuple] = []   # (sheet_name, ws_title, start_col)
+    frozen_last_col   : dict[str, int] = {}   # sheet_name → last non-empty col (for Phase 1c)
 
     for sheet_name in valid_names:
-        ws   = ws_dict[sheet_name]
-        rows = header_data.get(sheet_name, [])
-        last_col = COL_HIST_END
-        for row in rows:
-            for ci in range(len(row) - 1, -1, -1):
-                if str(row[ci]).strip():
-                    if ci + 1 > last_col:
-                        last_col = ci + 1
-                    break
-        if last_col > COL_HIST_END:
-            freeze_read_ranges.append(
-                f"'{sheet_name}'!{col_letter(COL_HIST_END + 1)}1"
-                f":{col_letter(last_col)}{NUM_ROWS}"
-            )
-            freeze_sheet_info.append((sheet_name, ws.title, COL_HIST_END + 1, last_col))
+        ws = ws_dict[sheet_name]
+        freeze_read_ranges.append(
+            f"'{sheet_name}'!"
+            f"{col_letter(COL_HIST_END + 1)}1"
+            f":{col_letter(FREEZE_MAX_COL)}{NUM_ROWS}"
+        )
+        freeze_sheet_info.append((sheet_name, ws.title, COL_HIST_END + 1))
 
-    if freeze_read_ranges:
-        freeze_write_data: list[dict] = []
-        for i in range(0, len(freeze_read_ranges), CHUNK):
-            chunk_ranges = freeze_read_ranges[i:i + CHUNK]
-            chunk_info   = freeze_sheet_info[i:i + CHUNK]
-            try:
-                resp = _sheets_retry(ss.values_batch_get, chunk_ranges,
-                                      {"valueRenderOption": "FORMATTED_VALUE"})
-                for (sname, ws_title, sc, ec), vr in zip(
-                        chunk_info, resp.get("valueRanges", [])):
-                    vals = vr.get("values", [])
-                    if vals:
-                        freeze_write_data.append({
-                            "range" : (f"'{ws_title}'!"
-                                       f"{col_letter(sc)}1:{col_letter(ec)}{NUM_ROWS}"),
-                            "values": vals,
-                        })
-            except Exception:
-                pass   # freeze ไม่ได้ก็ข้าม — ไม่หยุดทั้งกระบวนการ
+    freeze_write_data: list[dict] = []
+    for i in range(0, len(freeze_read_ranges), CHUNK):
+        chunk_ranges = freeze_read_ranges[i:i + CHUNK]
+        chunk_info   = freeze_sheet_info[i:i + CHUNK]
+        try:
+            resp = _sheets_retry(ss.values_batch_get, chunk_ranges,
+                                  {"valueRenderOption": "FORMATTED_VALUE"})
+            for (sname, ws_title, sc), vr in zip(chunk_info, resp.get("valueRanges", [])):
+                vals = vr.get("values", [])
+                if vals:
+                    # หา actual last non-empty column จาก vals ที่ได้
+                    max_width = max((len(r) for r in vals), default=0)
+                    ec = sc + max_width - 1
+                    # บันทึก last_col จริงสำหรับ Phase 1c (ป้องกัน paste_start เขียนทับ history เก่า)
+                    frozen_last_col[sname] = ec
+                    freeze_write_data.append({
+                        "range" : (f"'{ws_title}'!"
+                                   f"{col_letter(sc)}1:{col_letter(ec)}{NUM_ROWS}"),
+                        "values": vals,
+                    })
+        except Exception:
+            pass   # freeze ไม่ได้ก็ข้าม — ไม่หยุดทั้งกระบวนการ
 
-        for i in range(0, len(freeze_write_data), CHUNK):
-            try:
-                _sheets_retry(ss.values_batch_update, {
-                    "valueInputOption": "RAW",
-                    "data"            : freeze_write_data[i:i + CHUNK],
-                })
-            except Exception:
-                pass
+    for i in range(0, len(freeze_write_data), CHUNK):
+        try:
+            _sheets_retry(ss.values_batch_update, {
+                "valueInputOption": "RAW",
+                "data"            : freeze_write_data[i:i + CHUNK],
+            })
+        except Exception:
+            pass
 
     # ── Phase 1c: คำนวณ paste position + resize ถ้าจำเป็น ────────────
     paste_info: dict[str, tuple] = {}   # name → (paste_start, paste_end, ws)
@@ -1597,15 +1602,18 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         ws      = ws_dict[sheet_name]
         rows    = header_data.get(sheet_name, [])
 
-        # หา rightmost non-empty cell ในแถว 1-5 ทั้งหมด
-        # อ่าน 5 แถวเพราะแถว 1-4 ของ history block อาจว่าง แต่แถว 5 มี header "วันที่/เวลาเข้า..."
-        last_col = COL_HIST_END
+        # หา rightmost non-empty cell ในแถว 1-5 (สำหรับ history ที่มี bookmark)
+        last_col_hdr = COL_HIST_END
         for row in rows:
             for ci in range(len(row) - 1, -1, -1):
                 if str(row[ci]).strip():
-                    if ci + 1 > last_col:
-                        last_col = ci + 1
+                    if ci + 1 > last_col_hdr:
+                        last_col_hdr = ci + 1
                     break
+
+        # ใช้ค่าที่ Phase 1b.5 detect ได้จากการ scan ทุกแถว (แม้แถว 1-5 ว่าง)
+        # เพื่อป้องกัน paste_start เขียนทับ history เก่าที่มีแค่ข้อมูลแถว 6-36
+        last_col = max(last_col_hdr, frozen_last_col.get(sheet_name, COL_HIST_END))
 
         paste_start = last_col + 2
         paste_end   = paste_start + width
