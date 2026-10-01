@@ -164,7 +164,7 @@ def render_payroll_page(gc: gspread.Client,
     st.header("👷 จัดการเงินเดือนรายเดือน")
 
     try:
-        ss = gc.open_by_key(sheet_id)
+        ss = _sheets_retry(gc.open_by_key, sheet_id)
     except Exception as e:
         st.error(f"เปิด Spreadsheet ไม่ได้: {e}")
         return
@@ -173,7 +173,7 @@ def render_payroll_page(gc: gspread.Client,
     ss_db = None
     if history_db_id:
         try:
-            ss_db = gc.open_by_key(history_db_id)
+            ss_db = _sheets_retry(gc.open_by_key, history_db_id)
         except Exception:
             ss_db = None
 
