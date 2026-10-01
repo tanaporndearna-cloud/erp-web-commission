@@ -1631,11 +1631,23 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             }
         }))
 
-               if src_values:
-            # ไม่กรองวันที่ — รอบบัญชีครอบคลุม 2 เดือน (เช่น 26 มิ.ย.–25 ก.ค.)
-            # การกรองเฉพาะเดือนปัจจุบันทำให้ข้อมูลปลายเดือนก่อนหายไป
-            # ทำให้ row เหลื่อมกับ template → เก็บทุกแถวตามที่อ่านมาเลยค่ะ
-            filtered = list(src_values)
+        if src_values:
+            # กรอง src_values: เอาเฉพาะแถว header (5 แถวแรก) + แถวที่วันที่ตรงกับ month_yr
+            # เพื่อป้องกันแถวเดือนอื่น (เช่น สิงหาคม) ปนมาใน history กรกฎาคม
+            m_str, y_str = month_yr.split("/")
+            date_suffix_1 = f"/{m_str.zfill(2)}/{y_str}"   # /07/2569
+            date_suffix_2 = f"/{m_str}/{y_str}"             # /7/2569
+            filtered = []
+            for ri, row in enumerate(src_values):
+                if ri < 5:
+                    # header rows — เก็บไว้เสมอ
+                    filtered.append(row)
+                    continue
+                # ตรวจคอลัมน์ที่ 2 (index 1 = N = วันที่) — ถ้าว่างหรือตรงเดือน ก็เก็บ
+                cell_date = row[1].strip() if len(row) > 1 else ""
+                if not cell_date or date_suffix_1 in cell_date or date_suffix_2 in cell_date:
+                    filtered.append(row)
+                # ถ้าวันที่เป็นเดือนอื่น → ข้ามแถวนี้ (ไม่ append)
 
             dst_a1 = (f"{col_letter(paste_start)}1:"
                       f"{col_letter(paste_end - 1)}{NUM_ROWS}")
@@ -1718,3 +1730,4 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
 
     _upd(0.95, "⏳ เกือบเสร็จแล้วค่ะ...")
     return results
+
