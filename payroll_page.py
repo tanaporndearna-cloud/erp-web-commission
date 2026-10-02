@@ -260,18 +260,35 @@ def render_payroll_page(gc: gspread.Client,
                             f"'{sh}'!{col_letter(_FZ2_CS)}1:{col_letter(_FZ2_CE)}{_FZ2_R}"
                             for sh in _fz2_names
                         ]
+                        # อ่าน FORMULA + FORMATTED_VALUE → เขียนกลับเฉพาะ cell สูตร (cell รูปถูกข้าม)
                         _fz2_writes: list[dict] = []
                         for _fi2 in range(0, len(_fz2_ranges), _FZ2_CK):
                             try:
-                                _resp2 = _sheets_retry(ss.values_batch_get, _fz2_ranges[_fi2:_fi2 + _FZ2_CK])
-                                for _sn2, _vr2 in zip(_fz2_names[_fi2:_fi2 + _FZ2_CK], _resp2.get("valueRanges", [])):
-                                    _v2 = _vr2.get("values", [])
-                                    if _v2:
-                                        _ec2 = _FZ2_CS + max(len(_r) for _r in _v2) - 1
-                                        _fz2_writes.append({
-                                            "range" : f"'{_sn2}'!{col_letter(_FZ2_CS)}1:{col_letter(_ec2)}{_FZ2_R}",
-                                            "values": _v2,
-                                        })
+                                _cr2  = _fz2_ranges[_fi2:_fi2 + _FZ2_CK]
+                                _cn2  = _fz2_names[_fi2:_fi2 + _FZ2_CK]
+                                _rf2  = _sheets_retry(ss.values_batch_get, _cr2,
+                                                      params={"valueRenderOption": "FORMULA"})
+                                _rd2  = _sheets_retry(ss.values_batch_get, _cr2,
+                                                      params={"valueRenderOption": "FORMATTED_VALUE"})
+                                for _sn2, _vrf2, _vrd2 in zip(
+                                    _cn2,
+                                    _rf2.get("valueRanges", []),
+                                    _rd2.get("valueRanges", []),
+                                ):
+                                    _rows2f = _vrf2.get("values", [])
+                                    _rows2d = _vrd2.get("values", [])
+                                    if not _rows2f:
+                                        continue
+                                    for _ri2, _rowf2 in enumerate(_rows2f):
+                                        for _ci2, _cf2 in enumerate(_rowf2):
+                                            if isinstance(_cf2, str) and _cf2.startswith("="):
+                                                _dv2 = (_rows2d[_ri2][_ci2]
+                                                        if _ri2 < len(_rows2d) and _ci2 < len(_rows2d[_ri2])
+                                                        else "")
+                                                _fz2_writes.append({
+                                                    "range" : f"'{_sn2}'!{col_letter(_FZ2_CS + _ci2)}{_ri2 + 1}",
+                                                    "values": [[_dv2]],
+                                                })
                             except Exception:
                                 pass
                         for _fi2 in range(0, len(_fz2_writes), _FZ2_CK):
@@ -833,21 +850,36 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
         f"'{_esc(sh)}'!{col_letter(_FZ_COL_START)}1:{col_letter(_FZ_COL_END)}{_FZ_ROWS}"
         for sh in _fz_sheet_names
     ]
+    # อ่านสูตร + ค่าที่แสดง → เขียนกลับเฉพาะ cell ที่มีสูตร (cell รูปจะว่างใน FORMULA read → ไม่โดนทับ)
     _fz_writes: list[dict] = []
     for _fi in range(0, len(_fz_ranges), _FZ_CHUNK):
         _chunk_r = _fz_ranges[_fi:_fi + _FZ_CHUNK]
         _chunk_n = _fz_sheet_names[_fi:_fi + _FZ_CHUNK]
         try:
-            _resp = _sheets_retry(ss.values_batch_get, _chunk_r)
-            for _sn, _vr in zip(_chunk_n, _resp.get("valueRanges", [])):
-                _vals = _vr.get("values", [])
-                if _vals:
-                    _max_w = max(len(_r) for _r in _vals)
-                    _ec    = _FZ_COL_START + _max_w - 1
-                    _fz_writes.append({
-                        "range" : f"'{_esc(_sn)}'!{col_letter(_FZ_COL_START)}1:{col_letter(_ec)}{_FZ_ROWS}",
-                        "values": _vals,
-                    })
+            _resp_formula = _sheets_retry(ss.values_batch_get, _chunk_r,
+                                          params={"valueRenderOption": "FORMULA"})
+            _resp_display = _sheets_retry(ss.values_batch_get, _chunk_r,
+                                          params={"valueRenderOption": "FORMATTED_VALUE"})
+            for _sn, _vr_f, _vr_d in zip(
+                _chunk_n,
+                _resp_formula.get("valueRanges", []),
+                _resp_display.get("valueRanges", []),
+            ):
+                _rows_f = _vr_f.get("values", [])
+                _rows_d = _vr_d.get("values", [])
+                if not _rows_f:
+                    continue
+                # เขียนเฉพาะ cell ที่เป็นสูตร — cell ที่มีรูป (ค่าว่าง) จะถูกข้ามไป
+                for _ri, _row_f in enumerate(_rows_f):
+                    for _ci, _cell_f in enumerate(_row_f):
+                        if isinstance(_cell_f, str) and _cell_f.startswith("="):
+                            _disp = (_rows_d[_ri][_ci]
+                                     if _ri < len(_rows_d) and _ci < len(_rows_d[_ri])
+                                     else "")
+                            _fz_writes.append({
+                                "range" : f"'{_esc(_sn)}'!{col_letter(_FZ_COL_START + _ci)}{_ri + 1}",
+                                "values": [[_disp]],
+                            })
         except Exception:
             pass
     for _fi in range(0, len(_fz_writes), _FZ_CHUNK):
@@ -1686,52 +1718,59 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         )
         freeze_sheet_info.append((sheet_name, ws.title, COL_HIST_END + 1))
 
-    freeze_write_data: list[dict] = []
+    # อ่าน FORMULA + FORMATTED_VALUE → เขียนกลับเฉพาะ cell สูตร (cell รูปว่างใน FORMULA → ถูกข้าม)
+    freeze_write_data: list[dict] = []   # สำหรับ fallback per-sheet เท่านั้น
+    batch_freeze_cells: list[dict] = []  # individual cell writes (RAW)
+
     for i in range(0, len(freeze_read_ranges), CHUNK):
         chunk_ranges = freeze_read_ranges[i:i + CHUNK]
         chunk_info   = freeze_sheet_info[i:i + CHUNK]
         try:
-            # ไม่ส่ง params เพิ่ม — gspread default คือ FORMATTED_VALUE อยู่แล้ว
-            resp = _sheets_retry(ss.values_batch_get, chunk_ranges)
-            for (sname, ws_title, sc), vr in zip(chunk_info, resp.get("valueRanges", [])):
-                vals = vr.get("values", [])
-                if vals:
-                    # หา actual last non-empty column จาก vals ที่ได้
-                    max_width = max((len(r) for r in vals), default=0)
-                    ec = sc + max_width - 1
-                    # บันทึก last_col จริงสำหรับ Phase 1c (ป้องกัน paste_start เขียนทับ history เก่า)
-                    frozen_last_col[sname] = ec
-                    short_range = f"{col_letter(sc)}1:{col_letter(ec)}{NUM_ROWS}"
+            resp_f = _sheets_retry(ss.values_batch_get, chunk_ranges,
+                                   params={"valueRenderOption": "FORMULA"})
+            resp_d = _sheets_retry(ss.values_batch_get, chunk_ranges,
+                                   params={"valueRenderOption": "FORMATTED_VALUE"})
+            for (sname, ws_title, sc), vr_f, vr_d in zip(
+                chunk_info,
+                resp_f.get("valueRanges", []),
+                resp_d.get("valueRanges", []),
+            ):
+                rows_f = vr_f.get("values", [])
+                rows_d = vr_d.get("values", [])
+                if not rows_f:
+                    continue
+                # หา last_col จาก FORMULA read (เพื่อ Phase 1c)
+                max_width = max((len(r) for r in rows_f), default=0)
+                if max_width:
+                    frozen_last_col[sname] = sc + max_width - 1
                     freeze_write_data.append({
-                        "range"      : f"'{ws_title}'!{short_range}",
-                        "values"     : vals,
                         "ws"         : ws_dict[sname],
-                        "short_range": short_range,
+                        "short_range": f"{col_letter(sc)}1:{col_letter(sc + max_width - 1)}{NUM_ROWS}",
                     })
+                # เขียนเฉพาะ cell ที่มีสูตร — cell รูป (ว่างใน FORMULA read) จะถูกข้ามไป
+                for ri, row_f in enumerate(rows_f):
+                    for ci, cell_f in enumerate(row_f):
+                        if isinstance(cell_f, str) and cell_f.startswith("="):
+                            disp = (rows_d[ri][ci]
+                                    if ri < len(rows_d) and ci < len(rows_d[ri])
+                                    else "")
+                            batch_freeze_cells.append({
+                                "range" : f"'{ws_title}'!{col_letter(sc + ci)}{ri + 1}",
+                                "values": [[disp]],
+                            })
         except Exception:
             pass   # freeze ไม่ได้ก็ข้าม — ไม่หยุดทั้งกระบวนการ
 
-    # เขียนทับ history เก่าด้วย RAW (ตัดสูตรออก → static value)
-    # ใช้ values_batch_update ครั้งเดียวแทน ws.update() ทีละชีต → เร็วกว่ามาก
-    if freeze_write_data:
-        batch_freeze = [{"range": e["range"], "values": e["values"]}
-                        for e in freeze_write_data]
-        for i in range(0, len(batch_freeze), CHUNK):
-            chunk = batch_freeze[i:i + CHUNK]
-            try:
-                _sheets_retry(ss.values_batch_update, {
-                    "valueInputOption": "RAW",
-                    "data"            : chunk,
-                })
-            except Exception:
-                # fallback: เขียนทีละชีตถ้า batch พัง
-                for entry in freeze_write_data[i:i + CHUNK]:
-                    try:
-                        _sheets_retry(entry["ws"].update,
-                                      entry["short_range"], entry["values"],
-                                      value_input_option="RAW")
-                    except Exception:
-                        pass
+    # เขียนทับเฉพาะ cell สูตรด้วย RAW (รูปใน cell ไม่โดนทับ)
+    for i in range(0, len(batch_freeze_cells), CHUNK):
+        chunk = batch_freeze_cells[i:i + CHUNK]
+        try:
+            _sheets_retry(ss.values_batch_update, {
+                "valueInputOption": "RAW",
+                "data"            : chunk,
+            })
+        except Exception:
+            pass
 
     # ── Phase 1c: คำนวณ paste position + resize ถ้าจำเป็น ────────────
     paste_info: dict[str, tuple] = {}   # name → (paste_start, paste_end, ws)
