@@ -1514,6 +1514,34 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         if progress_bar  is not None: progress_bar.progress(min(pct, 1.0))
         if status_text   is not None: status_text.info(msg)
 
+    # ── helpers: ขยับ column reference ในสูตร (สำหรับ copy formula ไป history) ──
+    TW_START = 20   # col T (1-indexed)
+    TW_END   = 23   # col W (1-indexed)
+
+    def _col_str_to_num(s: str) -> int:
+        n = 0
+        for c in s:
+            n = n * 26 + (ord(c) - 64)
+        return n
+
+    def _col_num_to_str(n: int) -> str:
+        s = ""
+        while n > 0:
+            n, r = divmod(n - 1, 26)
+            s = chr(65 + r) + s
+        return s
+
+    def _shift_formula(formula: str, offset: int) -> str:
+        """ขยับ relative column reference ทุกตัวในสูตรไป offset คอลัมน์"""
+        if not isinstance(formula, str) or not formula.startswith("="):
+            return formula
+        def _repl(m):
+            dol1, col_s, dol2, row_s = m.group(1), m.group(2), m.group(3), m.group(4)
+            if not dol1:   # relative col → shift
+                col_s = _col_num_to_str(_col_str_to_num(col_s) + offset)
+            return f"{dol1}{col_s}{dol2}{row_s}"
+        return re.sub(r'(\$?)([A-Z]+)(\$?)(\d+)', _repl, formula)
+
     # ── Phase 1a: โหลด worksheet objects ทุกชีตพร้อมกัน (1 API call) ───
     _upd(0.05, f"⏳ กำลังโหลดรายชื่อชีต ({n_sheets} Sheet)...")
     try:
@@ -1689,6 +1717,23 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             for name in chunk_names:
                 src_data[name] = []
 
+    # ── Phase 1f: อ่าน FORMULA mode สำหรับ col T-W (สูตรคำนวณที่ต้องการ copy) ──
+    # อ่านสูตรจาก template ก่อน แล้วจะเขียนลง history block ใน Phase 3
+    # (PASTE_NORMAL อาจ copy สูตรได้อยู่แล้ว แต่ถ้า template มีค่านิ่งใน T-W
+    #  Phase 3 จะ write สูตรที่อ่านมาได้ทับให้แน่ใจ)
+    _upd(0.42, f"⏳ กำลังอ่านสูตร col T-W ({len(valid_names)} Sheet)...")
+    formula_tw: dict[str, list] = {}   # name → 2D list (DATA_START:DATA_END × T:W)
+    for sheet_name in valid_names:
+        ws = ws_dict[sheet_name]
+        try:
+            tw_rng = (f"{col_letter(TW_START)}{CFG['DATA_START']}"
+                      f":{col_letter(TW_END)}{CFG['DATA_END']}")
+            fdata = _sheets_retry(ws.get, tw_rng,
+                                  value_render_option="FORMULA")
+            formula_tw[sheet_name] = fdata
+        except Exception:
+            formula_tw[sheet_name] = []
+
     # ── Phase 1e: สร้าง copy_reqs (format only) + write_tasks ──────────
     for sheet_name in valid_names:
         paste_start, paste_end, ws = paste_info[sheet_name]
@@ -1773,15 +1818,44 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                                     r["ok"]  = False
                                     r["msg"] = f"copy format ล้มเหลว: {e2}"
 
-    # ── Phase 3: เขียน bookmark month_yr เท่านั้น ─────────────────────────────────
-    # PASTE_NORMAL ใน Phase 2 copy ทั้ง format + สูตรเรียบร้อยแล้ว — ไม่ต้อง write values ทับ
-    _upd(0.90, f"⏳ กำลังบันทึก bookmark ({len(bookmark_tasks)} Sheet)...")
+    # ── Phase 3: bookmark + เขียนสูตร col T-W ลง history block ──────────────────
+    # PASTE_NORMAL (Phase 2) copy format + values + สูตรที่มีใน template ครบแล้ว
+    # Phase 3 นี้ enforce ว่า col T-W ใน history มีสูตรเสมอ
+    # โดยอ่านสูตรจาก template (Phase 1f) แล้ว shift column reference → เขียนทับ
+    _upd(0.90, f"⏳ กำลังบันทึก bookmark + สูตร ({len(bookmark_tasks)} Sheet)...")
     for bm_ws, bm_short in bookmark_tasks:
+        # ── bookmark ──
         try:
             _sheets_retry(bm_ws.update, bm_short, [[month_yr]],
                           value_input_option="RAW")
         except Exception:
             pass   # bookmark พังก็ยังดีกว่าหยุดทั้งหมด
+
+        # ── เขียนสูตร T-W ลงใน history block (ขยับ column reference อัตโนมัติ) ──
+        sheet_name = bm_ws.title
+        fdata = formula_tw.get(sheet_name, [])
+        if not fdata:
+            continue
+        paste_start, _pe, _ = paste_info[sheet_name]
+        col_offset = paste_start - COL_HIST_START          # เช่น 26-13 = 13
+        hist_t = paste_start + (TW_START - COL_HIST_START) # history column ที่ตรงกับ T
+
+        adjusted = []
+        for row in fdata:
+            adj_row = [_shift_formula(f, col_offset) for f in row]
+            # pad ถ้า row สั้นกว่า 4 columns (T-W)
+            while len(adj_row) < (TW_END - TW_START + 1):
+                adj_row.append("")
+            adjusted.append(adj_row)
+
+        if adjusted:
+            rng = (f"{col_letter(hist_t)}{CFG['DATA_START']}"
+                   f":{col_letter(hist_t + TW_END - TW_START)}{CFG['DATA_END']}")
+            try:
+                _sheets_retry(bm_ws.update, rng, adjusted,
+                              value_input_option="USER_ENTERED")
+            except Exception:
+                pass   # ถ้า write formula พัง PASTE_NORMAL ยัง cover อยู่
 
     _upd(0.95, "⏳ เกือบเสร็จแล้วค่ะ...")
     return results
