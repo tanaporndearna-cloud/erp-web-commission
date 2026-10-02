@@ -1492,10 +1492,10 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                            ss_db: gspread.Spreadsheet | None = None,
                            status_text=None, progress_bar=None) -> list:
     """
-    บันทึกประวัติทุก sheet — copy formatting (ตาราง/สี) แต่เขียน values เท่านั้น (ไม่มีสูตร):
+    บันทึกประวัติทุก sheet — copy ทั้ง format + สูตร (PASTE_NORMAL) แล้วเขียน bookmark:
       Phase 1: อ่านทุก sheet ด้วย batch_get (~3 API calls)
-      Phase 2: copyPaste PASTE_FORMAT (เส้นตาราง/สี/header เท่านั้น — ไม่มีสูตร)
-      Phase 3: write values ทับ (RAW mode)
+      Phase 2: copyPaste PASTE_NORMAL (เส้นตาราง/สี/header + สูตรครบ)
+      Phase 3: write bookmark month_yr เท่านั้น (ไม่ต้อง write values ทับ)
     """
     COL_HIST_START = 13
     COL_HIST_END   = 25
@@ -1714,7 +1714,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                     "endColumnIndex"  : COL_HIST_END,
                 },
                 "destination": dest_range,
-                "pasteType"       : "PASTE_FORMAT",   # formatting เท่านั้น — ไม่มีสูตร
+                "pasteType"       : "PASTE_NORMAL",   # copy ทั้ง format + สูตร (relative refs ขยับอัตโนมัติ)
                 "pasteOrientation": "NORMAL",
             }
         }))
@@ -1735,8 +1735,8 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         # ── bookmark: เขียน month_yr ที่คอลัมน์สุดท้ายของ block แถว 1 ──────
         # ทำให้ครั้งถัดไปสแกนแถว 1-5 แล้วเจอ bookmark จะรู้ว่า block จบที่ไหน
         # ป้องกัน history ซ้อนทับกัน แม้คอลัมน์ท้ายของ template จะว่างเปล่า
-        bookmark_range = f"'{ws.title}'!{col_letter(paste_end - 1)}1"
-        bookmark_tasks.append(bookmark_range)
+        bm_short_all = f"{col_letter(paste_end - 1)}1"
+        bookmark_tasks.append((ws, bm_short_all))
 
         results.append({"ok": True, "sheet": sheet_name,
                         "msg": f"บันทึกประวัติ {month_yr} ที่คอลัมน์ "
@@ -1773,26 +1773,15 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                                     r["ok"]  = False
                                     r["msg"] = f"copy format ล้มเหลว: {e2}"
 
-    # ── Phase 3: write values ทุกชีต (ws.update ทีละชีต — เสถียรทุก gspread version) ──
-    _upd(0.75, f"⏳ กำลังบันทึกค่า ({len(write_tasks)} Sheet)...")
-    for ws, dst_a1, src_values, sheet_name, _, bm_short in write_tasks:
-        # เขียน history data
+    # ── Phase 3: เขียน bookmark month_yr เท่านั้น ─────────────────────────────────
+    # PASTE_NORMAL ใน Phase 2 copy ทั้ง format + สูตรเรียบร้อยแล้ว — ไม่ต้อง write values ทับ
+    _upd(0.90, f"⏳ กำลังบันทึก bookmark ({len(bookmark_tasks)} Sheet)...")
+    for bm_ws, bm_short in bookmark_tasks:
         try:
-            _sheets_retry(ws.update, dst_a1, src_values,
-                          value_input_option="RAW")
-        except Exception as e2:
-            for r in results:
-                if r["sheet"] == sheet_name:
-                    r["ok"]  = False
-                    r["msg"] = str(e2)
-            continue   # ถ้า data ไม่ได้ ข้าม bookmark ด้วย
-        # เขียน bookmark (month_yr) ที่คอลัมน์สุดท้ายของ block แถว 1
-        # bookmark สำคัญมาก — ถ้าขาดหายครั้งถัดไปจะหา last_col ไม่เจอ → เขียนทับ history
-        try:
-            _sheets_retry(ws.update, bm_short, [[month_yr]],
+            _sheets_retry(bm_ws.update, bm_short, [[month_yr]],
                           value_input_option="RAW")
         except Exception:
-            pass   # bookmark พังก็ยังดีกว่า data ไม่ได้
+            pass   # bookmark พังก็ยังดีกว่าหยุดทั้งหมด
 
     _upd(0.95, "⏳ เกือบเสร็จแล้วค่ะ...")
     return results
