@@ -1634,6 +1634,8 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         (4,  19): "=F4",    # Row 4  Col S → =F4
         (39, 20): "=G39",   # Row 39 Col T → =G39
         (45, 20): "=G45",   # Row 45 Col T → =G45
+        (49, 20): "=G49",   # Row 49 Col T → =G49
+        (50, 20): "=G50",   # Row 50 Col T → =G50
     }
 
     def _col_str_to_num(s: str) -> int:
