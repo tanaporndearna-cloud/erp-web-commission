@@ -1518,6 +1518,15 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
     TW_START = 20   # col T (1-indexed)
     TW_END   = 23   # col W (1-indexed)
 
+    # ── Config: cells ที่บันทึก history เป็นค่านิ่ง (ไม่เอาสูตร) ──────────────
+    # (row_from, row_to, col_from, col_to) — 1-indexed ตาม template (M=13, N=14, ...)
+    # Phase 3 จะอ่านค่า formatted จาก src_data แล้วเขียนทับหลัง PASTE_NORMAL
+    HISTORY_STATIC_RANGES = [
+        (1,  5,  14, 25),   # Row 1-5  , Col N-Y  (header block)
+        (39, 39, 20, 20),   # Row 39   , Col T
+        (45, 45, 20, 20),   # Row 45   , Col T
+    ]
+
     def _col_str_to_num(s: str) -> int:
         n = 0
         for c in s:
@@ -1717,22 +1726,33 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             for name in chunk_names:
                 src_data[name] = []
 
-    # ── Phase 1f: อ่าน FORMULA mode สำหรับ col T-W (สูตรคำนวณที่ต้องการ copy) ──
+    # ── Phase 1f: อ่าน FORMULA mode สำหรับ col T-W (batch — ~1 API call) ────
     # อ่านสูตรจาก template ก่อน แล้วจะเขียนลง history block ใน Phase 3
     # (PASTE_NORMAL อาจ copy สูตรได้อยู่แล้ว แต่ถ้า template มีค่านิ่งใน T-W
     #  Phase 3 จะ write สูตรที่อ่านมาได้ทับให้แน่ใจ)
     _upd(0.42, f"⏳ กำลังอ่านสูตร col T-W ({len(valid_names)} Sheet)...")
     formula_tw: dict[str, list] = {}   # name → 2D list (DATA_START:DATA_END × T:W)
-    for sheet_name in valid_names:
-        ws = ws_dict[sheet_name]
+    tw_rng_suffix = (f"{col_letter(TW_START)}{CFG['DATA_START']}"
+                     f":{col_letter(TW_END)}{CFG['DATA_END']}")
+    tw_ranges_list = [f"'{n}'!{tw_rng_suffix}" for n in valid_names]
+    for i in range(0, len(valid_names), CHUNK):
+        chunk_names  = valid_names[i:i + CHUNK]
+        chunk_ranges = tw_ranges_list[i:i + CHUNK]
         try:
-            tw_rng = (f"{col_letter(TW_START)}{CFG['DATA_START']}"
-                      f":{col_letter(TW_END)}{CFG['DATA_END']}")
-            fdata = _sheets_retry(ws.get, tw_rng,
-                                  value_render_option="FORMULA")
-            formula_tw[sheet_name] = fdata
+            resp = _sheets_retry(ss.values_batch_get, chunk_ranges,
+                                 params={"valueRenderOption": "FORMULA"})
+            for name, vr in zip(chunk_names, resp.get("valueRanges", [])):
+                formula_tw[name] = vr.get("values", [])
         except Exception:
-            formula_tw[sheet_name] = []
+            # fallback: อ่านทีละชีต
+            for sheet_name in chunk_names:
+                ws_tmp = ws_dict[sheet_name]
+                try:
+                    formula_tw[sheet_name] = _sheets_retry(
+                        ws_tmp.get, tw_rng_suffix,
+                        value_render_option="FORMULA")
+                except Exception:
+                    formula_tw[sheet_name] = []
 
     # ── Phase 1e: สร้าง copy_reqs (format only) + write_tasks ──────────
     for sheet_name in valid_names:
@@ -1856,6 +1876,28 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                               value_input_option="USER_ENTERED")
             except Exception:
                 pass   # ถ้า write formula พัง PASTE_NORMAL ยัง cover อยู่
+
+        # ── เขียน static values ทับ cells ที่กำหนดใน HISTORY_STATIC_RANGES ─
+        src_vals = src_data.get(sheet_name, [])
+        for (r_from, r_to, c_from, c_to) in HISTORY_STATIC_RANGES:
+            h_col_from = paste_start + (c_from - COL_HIST_START)
+            h_col_to   = paste_start + (c_to   - COL_HIST_START)
+            rows_static = []
+            for r in range(r_from, r_to + 1):
+                src_row = src_vals[r - 1] if (r - 1) < len(src_vals) else []
+                row_vals = []
+                for c in range(c_from, c_to + 1):
+                    idx = c - COL_HIST_START   # index ใน src_data row (M=0, N=1, ...)
+                    row_vals.append(src_row[idx] if idx < len(src_row) else "")
+                rows_static.append(row_vals)
+            if rows_static:
+                rng_s = (f"{col_letter(h_col_from)}{r_from}:"
+                         f"{col_letter(h_col_to)}{r_to}")
+                try:
+                    _sheets_retry(bm_ws.update, rng_s, rows_static,
+                                  value_input_option="RAW")
+                except Exception:
+                    pass
 
     _upd(0.95, "⏳ เกือบเสร็จแล้วค่ะ...")
     return results
