@@ -1629,6 +1629,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
     # value: สูตรที่จะเขียน (อ้างอิง col A-L เท่านั้น ไม่ขยับตาม offset)
     HISTORY_FORMULA_REFS = {
         (2,  19): "=F2",    # Row 2  Col S → =F2
+        (2,  20): "=G2",    # Row 2  Col T → =G2
         (3,  16): "=C3",    # Row 3  Col P → =C3
         (4,  16): "=C4",    # Row 4  Col P → =C4
         (4,  19): "=F4",    # Row 4  Col S → =F4
