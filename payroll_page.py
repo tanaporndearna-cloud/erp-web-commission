@@ -249,6 +249,42 @@ def render_payroll_page(gc: gspread.Client,
                                     st.text(err)
                         return
 
+                    # ── Freeze ประวัติเก่า → ค่านิ่ง (ก่อนคิดเงินเดือน) ──────────
+                    _fz2_names = [sh for _, sh in pairs if ss.worksheet(sh) is not None]
+                    try:
+                        _all_ws2   = _sheets_retry(ss.worksheets)
+                        _ws2_map   = {w.title: w for w in _all_ws2}
+                        _fz2_names = [sh for _, sh in pairs if sh in _ws2_map]
+                        _FZ2_CS, _FZ2_CE, _FZ2_R, _FZ2_CK = 26, 150, 100, 100
+                        _fz2_ranges = [
+                            f"'{sh}'!{col_letter(_FZ2_CS)}1:{col_letter(_FZ2_CE)}{_FZ2_R}"
+                            for sh in _fz2_names
+                        ]
+                        _fz2_writes: list[dict] = []
+                        for _fi2 in range(0, len(_fz2_ranges), _FZ2_CK):
+                            try:
+                                _resp2 = _sheets_retry(ss.values_batch_get, _fz2_ranges[_fi2:_fi2 + _FZ2_CK])
+                                for _sn2, _vr2 in zip(_fz2_names[_fi2:_fi2 + _FZ2_CK], _resp2.get("valueRanges", [])):
+                                    _v2 = _vr2.get("values", [])
+                                    if _v2:
+                                        _ec2 = _FZ2_CS + max(len(_r) for _r in _v2) - 1
+                                        _fz2_writes.append({
+                                            "range" : f"'{_sn2}'!{col_letter(_FZ2_CS)}1:{col_letter(_ec2)}{_FZ2_R}",
+                                            "values": _v2,
+                                        })
+                            except Exception:
+                                pass
+                        for _fi2 in range(0, len(_fz2_writes), _FZ2_CK):
+                            try:
+                                _sheets_retry(ss.values_batch_update, {
+                                    "valueInputOption": "RAW",
+                                    "data"            : _fz2_writes[_fi2:_fi2 + _FZ2_CK],
+                                })
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass   # freeze ไม่ได้ก็ข้าม ไม่หยุดการคิดเงินเดือน
+
                     for idx, (emp_id, sh_pay) in enumerate(pairs):
                         label = "ประมวลผล"
                         status_text.info(
@@ -784,6 +820,44 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
     chunks = [valid_pairs[i:i + CHUNK_SIZE]
               for i in range(0, len(valid_pairs), CHUNK_SIZE)]
     total_chunks = len(chunks)
+
+    # ── Phase 1.5: Freeze ประวัติเก่า → ค่านิ่ง (ทำก่อนคิดเงินเดือน) ─────────
+    # ล็อคสูตรในประวัติเก่าให้เป็นค่าตายตัว ก่อนที่ข้อมูลเดือนนี้จะถูกเขียนทับ template
+    _FZ_COL_START = 26    # col Z (หลัง Y=25 ซึ่งเป็น COL_HIST_END)
+    _FZ_COL_END   = 150   # ครอบคลุม ~9 เดือนย้อนหลัง
+    _FZ_ROWS      = 100   # NUM_ROWS
+    _FZ_CHUNK     = 100   # max ranges per batch call
+    status_text.info("🔒 [1.5/5] กำลัง freeze ประวัติเก่า → ค่านิ่ง...")
+    _fz_sheet_names = [sh for _, sh in valid_pairs]
+    _fz_ranges = [
+        f"'{_esc(sh)}'!{col_letter(_FZ_COL_START)}1:{col_letter(_FZ_COL_END)}{_FZ_ROWS}"
+        for sh in _fz_sheet_names
+    ]
+    _fz_writes: list[dict] = []
+    for _fi in range(0, len(_fz_ranges), _FZ_CHUNK):
+        _chunk_r = _fz_ranges[_fi:_fi + _FZ_CHUNK]
+        _chunk_n = _fz_sheet_names[_fi:_fi + _FZ_CHUNK]
+        try:
+            _resp = _sheets_retry(ss.values_batch_get, _chunk_r)
+            for _sn, _vr in zip(_chunk_n, _resp.get("valueRanges", [])):
+                _vals = _vr.get("values", [])
+                if _vals:
+                    _max_w = max(len(_r) for _r in _vals)
+                    _ec    = _FZ_COL_START + _max_w - 1
+                    _fz_writes.append({
+                        "range" : f"'{_esc(_sn)}'!{col_letter(_FZ_COL_START)}1:{col_letter(_ec)}{_FZ_ROWS}",
+                        "values": _vals,
+                    })
+        except Exception:
+            pass
+    for _fi in range(0, len(_fz_writes), _FZ_CHUNK):
+        try:
+            _sheets_retry(ss.values_batch_update, {
+                "valueInputOption": "RAW",
+                "data"            : _fz_writes[_fi:_fi + _FZ_CHUNK],
+            })
+        except Exception:
+            pass
 
     GRAY    = {"red": 211/255, "green": 211/255, "blue": 211/255}
     WHITE   = {"red": 1.0,     "green": 1.0,     "blue": 1.0}
