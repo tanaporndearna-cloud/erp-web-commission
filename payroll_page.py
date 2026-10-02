@@ -1518,14 +1518,17 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
     TW_START = 20   # col T (1-indexed)
     TW_END   = 23   # col W (1-indexed)
 
-    # ── Config: cells ที่บันทึก history เป็นค่านิ่ง (ไม่เอาสูตร) ──────────────
-    # (row_from, row_to, col_from, col_to) — 1-indexed ตาม template (M=13, N=14, ...)
-    # Phase 3 จะอ่านค่า formatted จาก src_data แล้วเขียนทับหลัง PASTE_NORMAL
-    HISTORY_STATIC_RANGES = [
-        (1,  5,  14, 25),   # Row 1-5  , Col N-Y  (header block)
-        (39, 39, 20, 20),   # Row 39   , Col T
-        (45, 45, 20, 20),   # Row 45   , Col T
-    ]
+    # ── Config: cells ใน history block ที่ให้เขียนสูตรอ้างอิง col A-L คงที่ ──────
+    # key: (template_row, template_col) — 1-indexed
+    # value: สูตรที่จะเขียน (อ้างอิง col A-L เท่านั้น ไม่ขยับตาม offset)
+    HISTORY_FORMULA_REFS = {
+        (2,  19): "=F2",    # Row 2  Col S → =F2
+        (3,  16): "=C3",    # Row 3  Col P → =C3
+        (4,  16): "=C4",    # Row 4  Col P → =C4
+        (4,  19): "=F4",    # Row 4  Col S → =F4
+        (39, 20): "=G39",   # Row 39 Col T → =G39
+        (45, 20): "=G45",   # Row 45 Col T → =G45
+    }
 
     def _col_str_to_num(s: str) -> int:
         n = 0
@@ -1877,27 +1880,15 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             except Exception:
                 pass   # ถ้า write formula พัง PASTE_NORMAL ยัง cover อยู่
 
-        # ── เขียน static values ทับ cells ที่กำหนดใน HISTORY_STATIC_RANGES ─
-        src_vals = src_data.get(sheet_name, [])
-        for (r_from, r_to, c_from, c_to) in HISTORY_STATIC_RANGES:
-            h_col_from = paste_start + (c_from - COL_HIST_START)
-            h_col_to   = paste_start + (c_to   - COL_HIST_START)
-            rows_static = []
-            for r in range(r_from, r_to + 1):
-                src_row = src_vals[r - 1] if (r - 1) < len(src_vals) else []
-                row_vals = []
-                for c in range(c_from, c_to + 1):
-                    idx = c - COL_HIST_START   # index ใน src_data row (M=0, N=1, ...)
-                    row_vals.append(src_row[idx] if idx < len(src_row) else "")
-                rows_static.append(row_vals)
-            if rows_static:
-                rng_s = (f"{col_letter(h_col_from)}{r_from}:"
-                         f"{col_letter(h_col_to)}{r_to}")
-                try:
-                    _sheets_retry(bm_ws.update, rng_s, rows_static,
-                                  value_input_option="RAW")
-                except Exception:
-                    pass
+        # ── เขียนสูตรอ้างอิง col A-L ทับ cells ที่กำหนดใน HISTORY_FORMULA_REFS ──
+        for (tmpl_row, tmpl_col), formula in HISTORY_FORMULA_REFS.items():
+            h_col = paste_start + (tmpl_col - COL_HIST_START)
+            rng_f = f"{col_letter(h_col)}{tmpl_row}"
+            try:
+                _sheets_retry(bm_ws.update, rng_f, [[formula]],
+                              value_input_option="USER_ENTERED")
+            except Exception:
+                pass
 
     _upd(0.95, "⏳ เกือบเสร็จแล้วค่ะ...")
     return results
