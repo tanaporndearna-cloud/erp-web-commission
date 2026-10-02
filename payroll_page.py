@@ -1842,53 +1842,92 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                                     r["msg"] = f"copy format ล้มเหลว: {e2}"
 
     # ── Phase 3: bookmark + เขียนสูตร col T-W ลง history block ──────────────────
-    # PASTE_NORMAL (Phase 2) copy format + values + สูตรที่มีใน template ครบแล้ว
-    # Phase 3 นี้ enforce ว่า col T-W ใน history มีสูตรเสมอ
-    # โดยอ่านสูตรจาก template (Phase 1f) แล้ว shift column reference → เขียนทับ
+    # รวม writes ทุก sheet เป็น 2 batch calls (RAW + USER_ENTERED)
+    # แทนที่จะ loop ทีละ sheet ทีละ range (~700 calls → ~2 calls)
     _upd(0.90, f"⏳ กำลังบันทึก bookmark + สูตร ({len(bookmark_tasks)} Sheet)...")
-    for bm_ws, bm_short in bookmark_tasks:
-        # ── bookmark ──
-        try:
-            _sheets_retry(bm_ws.update, bm_short, [[month_yr]],
-                          value_input_option="RAW")
-        except Exception:
-            pass   # bookmark พังก็ยังดีกว่าหยุดทั้งหมด
 
-        # ── เขียนสูตร T-W ลงใน history block (ขยับ column reference อัตโนมัติ) ──
-        sheet_name = bm_ws.title
+    raw_writes      : list[dict] = []   # bookmark (RAW)
+    formula_writes  : list[dict] = []   # สูตร T-W + HISTORY_FORMULA_REFS (USER_ENTERED)
+
+    for bm_ws, bm_short in bookmark_tasks:
+        ws_title   = bm_ws.title
+        sheet_name = ws_title
+
+        # ── bookmark (RAW) ──
+        raw_writes.append({
+            "range" : f"'{ws_title}'!{bm_short}",
+            "values": [[month_yr]],
+        })
+
+        # ── เขียนสูตร T-W (USER_ENTERED) ──
         fdata = formula_tw.get(sheet_name, [])
-        if not fdata:
+        if sheet_name not in paste_info:
             continue
         paste_start, _pe, _ = paste_info[sheet_name]
-        col_offset = paste_start - COL_HIST_START          # เช่น 26-13 = 13
-        hist_t = paste_start + (TW_START - COL_HIST_START) # history column ที่ตรงกับ T
+        col_offset = paste_start - COL_HIST_START
+        hist_t     = paste_start + (TW_START - COL_HIST_START)
 
-        adjusted = []
-        for row in fdata:
-            adj_row = [_shift_formula(f, col_offset) for f in row]
-            # pad ถ้า row สั้นกว่า 4 columns (T-W)
-            while len(adj_row) < (TW_END - TW_START + 1):
-                adj_row.append("")
-            adjusted.append(adj_row)
+        if fdata:
+            adjusted = []
+            for row in fdata:
+                adj_row = [_shift_formula(f, col_offset) for f in row]
+                while len(adj_row) < (TW_END - TW_START + 1):
+                    adj_row.append("")
+                adjusted.append(adj_row)
+            if adjusted:
+                rng = (f"{col_letter(hist_t)}{CFG['DATA_START']}"
+                       f":{col_letter(hist_t + TW_END - TW_START)}{CFG['DATA_END']}")
+                formula_writes.append({
+                    "range" : f"'{ws_title}'!{rng}",
+                    "values": adjusted,
+                })
 
-        if adjusted:
-            rng = (f"{col_letter(hist_t)}{CFG['DATA_START']}"
-                   f":{col_letter(hist_t + TW_END - TW_START)}{CFG['DATA_END']}")
-            try:
-                _sheets_retry(bm_ws.update, rng, adjusted,
-                              value_input_option="USER_ENTERED")
-            except Exception:
-                pass   # ถ้า write formula พัง PASTE_NORMAL ยัง cover อยู่
-
-        # ── เขียนสูตรอ้างอิง col A-L ทับ cells ที่กำหนดใน HISTORY_FORMULA_REFS ──
+        # ── HISTORY_FORMULA_REFS (USER_ENTERED) ──
         for (tmpl_row, tmpl_col), formula in HISTORY_FORMULA_REFS.items():
             h_col = paste_start + (tmpl_col - COL_HIST_START)
             rng_f = f"{col_letter(h_col)}{tmpl_row}"
-            try:
-                _sheets_retry(bm_ws.update, rng_f, [[formula]],
-                              value_input_option="USER_ENTERED")
-            except Exception:
-                pass
+            formula_writes.append({
+                "range" : f"'{ws_title}'!{rng_f}",
+                "values": [[formula]],
+            })
+
+    # ── batch write RAW (bookmarks) ──
+    for i in range(0, len(raw_writes), CHUNK):
+        try:
+            _sheets_retry(ss.values_batch_update, {
+                "valueInputOption": "RAW",
+                "data"            : raw_writes[i:i + CHUNK],
+            })
+        except Exception:
+            for entry in raw_writes[i:i + CHUNK]:
+                sname = entry["range"].split("'!")[0].strip("'")
+                ws_tmp = ws_dict.get(sname)
+                if ws_tmp:
+                    try:
+                        short = entry["range"].split("'!")[-1]
+                        _sheets_retry(ws_tmp.update, short, entry["values"],
+                                      value_input_option="RAW")
+                    except Exception:
+                        pass
+
+    # ── batch write USER_ENTERED (สูตร T-W + formula refs) ──
+    for i in range(0, len(formula_writes), CHUNK):
+        try:
+            _sheets_retry(ss.values_batch_update, {
+                "valueInputOption": "USER_ENTERED",
+                "data"            : formula_writes[i:i + CHUNK],
+            })
+        except Exception:
+            for entry in formula_writes[i:i + CHUNK]:
+                sname = entry["range"].split("'!")[0].strip("'")
+                ws_tmp = ws_dict.get(sname)
+                if ws_tmp:
+                    try:
+                        short = entry["range"].split("'!")[-1]
+                        _sheets_retry(ws_tmp.update, short, entry["values"],
+                                      value_input_option="USER_ENTERED")
+                    except Exception:
+                        pass
 
     _upd(0.95, "⏳ เกือบเสร็จแล้วค่ะ...")
     return results
