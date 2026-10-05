@@ -260,7 +260,7 @@ def render_payroll_page(gc: gspread.Client,
                             f"'{sh}'!{col_letter(_FZ2_CS)}1:{col_letter(_FZ2_CE)}{_FZ2_R}"
                             for sh in _fz2_names
                         ]
-                        # อ่าน FORMULA + FORMATTED_VALUE → เขียนกลับเฉพาะ cell สูตร (cell รูปถูกข้าม)
+                        # อ่าน FORMULA + FORMATTED_VALUE → เขียนกลับแบบ column-based (ข้ามคอลัมน์รูปล้วน)
                         _fz2_writes: list[dict] = []
                         for _fi2 in range(0, len(_fz2_ranges), _FZ2_CK):
                             try:
@@ -279,16 +279,23 @@ def render_payroll_page(gc: gspread.Client,
                                     _rows2d = _vrd2.get("values", [])
                                     if not _rows2f:
                                         continue
-                                    for _ri2, _rowf2 in enumerate(_rows2f):
-                                        for _ci2, _cf2 in enumerate(_rowf2):
-                                            if isinstance(_cf2, str) and _cf2.startswith("="):
-                                                _dv2 = (_rows2d[_ri2][_ci2]
-                                                        if _ri2 < len(_rows2d) and _ci2 < len(_rows2d[_ri2])
-                                                        else "")
-                                                _fz2_writes.append({
-                                                    "range" : f"'{_sn2}'!{col_letter(_FZ2_CS + _ci2)}{_ri2 + 1}",
-                                                    "values": [[_dv2]],
-                                                })
+                                    _max2w = max((len(_r) for _r in _rows2f), default=0)
+                                    for _ci2 in range(_max2w):
+                                        _has2f = any(
+                                            _ci2 < len(_rf) and isinstance(_rf[_ci2], str) and _rf[_ci2].startswith("=")
+                                            for _rf in _rows2f
+                                        )
+                                        if not _has2f:
+                                            continue
+                                        _col2d = [
+                                            [_rows2d[_ri2][_ci2] if _ri2 < len(_rows2d) and _ci2 < len(_rows2d[_ri2]) else ""]
+                                            for _ri2 in range(len(_rows2f))
+                                        ]
+                                        _abs2c = _FZ2_CS + _ci2
+                                        _fz2_writes.append({
+                                            "range" : f"'{_sn2}'!{col_letter(_abs2c)}1:{col_letter(_abs2c)}{len(_rows2f)}",
+                                            "values": _col2d,
+                                        })
                             except Exception:
                                 pass
                         for _fi2 in range(0, len(_fz2_writes), _FZ2_CK):
@@ -418,6 +425,12 @@ def render_payroll_page(gc: gspread.Client,
                     hist_label = "📚 บันทึกประวัติ (เทมเพลต" + (" + DB" if ss_db else "") + ")"
                     if st.button(hist_label, key="btn_history", use_container_width=True):
                         _run_sheets(matched_pairs, att_df, do_history=True)
+
+                st.divider()
+                st.caption("🔒 Freeze ประวัติ — แปลงสูตรในคอลัมน์ประวัติ (Z เป็นต้นไป) ให้เป็นค่านิ่ง กดได้ทุกเวลา ไม่ต้องรันเงินเดือนใหม่")
+                if st.button("🔒 Freeze ประวัติ → ค่านิ่ง (กดได้ทุกเวลา)",
+                             key="btn_freeze_only", use_container_width=True):
+                    _freeze_history_standalone(matched_pairs, ss)
             else:
                 st.warning("⚠️ อ่านไฟล์ไม่ได้ หรือไม่พบข้อมูล")
 
@@ -778,6 +791,113 @@ def _clear_attendance(ss: gspread.Spreadsheet, sheet_name: str) -> dict:
         return {"ok": False, "msg": str(e)}
 
 
+def _freeze_history_standalone(pairs, ss):
+    """
+    🔒 Freeze ประวัติ → ค่านิ่ง (standalone — กดได้ทุกเวลา ไม่ต้องรันเงินเดือนใหม่)
+
+    อ่านคอลัมน์ Z (26) → col 150 ของทุก Sheet ใน pairs
+    แปลงสูตรเป็น static value แบบ column-based เพื่อปกป้องรูปที่แทรกไว้
+    """
+    FZ_COL_START = 26    # col Z
+    FZ_COL_END   = 150
+    FZ_ROWS      = 100
+    CHUNK        = 50
+
+    def _esc(sh: str) -> str:
+        return sh.replace("'", "''")
+
+    status_text  = st.empty()
+    progress_bar = st.progress(0.0)
+
+    # ── Step 1: เตรียม sheet list ────────────────────────────────
+    status_text.info("🔍 [1/3] กำลังโหลด Sheet list...")
+    try:
+        all_ws   = _sheets_retry(ss.worksheets)
+        ws_map   = {w.title: w for w in all_ws}
+    except Exception as e:
+        st.error(f"❌ เปิด Spreadsheet ไม่ได้: {e}")
+        progress_bar.empty(); status_text.empty()
+        return
+
+    sheet_names = [sh for _, sh in pairs if sh in ws_map]
+    if not sheet_names:
+        st.warning("⚠️ ไม่พบ Sheet ที่ตรงกันเลยค่ะ")
+        progress_bar.empty(); status_text.empty()
+        return
+
+    fz_ranges = [
+        f"'{_esc(sh)}'!{col_letter(FZ_COL_START)}1:{col_letter(FZ_COL_END)}{FZ_ROWS}"
+        for sh in sheet_names
+    ]
+
+    # ── Step 2: อ่าน FORMULA + FORMATTED_VALUE ──────────────────
+    status_text.info(f"📖 [2/3] กำลังอ่านประวัติ {len(sheet_names)} Sheet...")
+    fz_writes: list[dict] = []
+    total_chunks = max(1, len(fz_ranges) // CHUNK + (1 if len(fz_ranges) % CHUNK else 0))
+
+    for fi in range(0, len(fz_ranges), CHUNK):
+        chunk_r = fz_ranges[fi:fi + CHUNK]
+        chunk_n = sheet_names[fi:fi + CHUNK]
+        progress_bar.progress(0.1 + 0.5 * (fi / max(1, len(fz_ranges))))
+        try:
+            resp_f = _sheets_retry(ss.values_batch_get, chunk_r,
+                                   params={"valueRenderOption": "FORMULA"})
+            resp_d = _sheets_retry(ss.values_batch_get, chunk_r,
+                                   params={"valueRenderOption": "FORMATTED_VALUE"})
+            for sn, vr_f, vr_d in zip(
+                chunk_n,
+                resp_f.get("valueRanges", []),
+                resp_d.get("valueRanges", []),
+            ):
+                ws_title = ws_map[sn].title
+                rows_f   = vr_f.get("values", [])
+                rows_d   = vr_d.get("values", [])
+                if not rows_f:
+                    continue
+                max_w = max((len(r) for r in rows_f), default=0)
+                # column-based: เขียนเฉพาะคอลัมน์ที่มีสูตรอย่างน้อย 1 cell
+                for ci in range(max_w):
+                    has_fml = any(
+                        ci < len(rf) and isinstance(rf[ci], str) and rf[ci].startswith("=")
+                        for rf in rows_f
+                    )
+                    if not has_fml:
+                        continue
+                    col_disp = [
+                        [rows_d[ri][ci] if ri < len(rows_d) and ci < len(rows_d[ri]) else ""]
+                        for ri in range(len(rows_f))
+                    ]
+                    abs_col = FZ_COL_START + ci
+                    fz_writes.append({
+                        "range" : f"'{_esc(ws_title)}'!{col_letter(abs_col)}1:{col_letter(abs_col)}{len(rows_f)}",
+                        "values": col_disp,
+                    })
+        except Exception:
+            pass
+
+    # ── Step 3: เขียนกลับ ───────────────────────────────────────
+    if not fz_writes:
+        st.info("ℹ️ ไม่พบสูตรในประวัติ (อาจ freeze ไปแล้ว หรือยังไม่มีประวัติ)")
+        progress_bar.empty(); status_text.empty()
+        return
+
+    status_text.info(f"💾 [3/3] กำลัง freeze {len(fz_writes)} คอลัมน์...")
+    for fi in range(0, len(fz_writes), CHUNK):
+        progress_bar.progress(0.6 + 0.4 * (fi / max(1, len(fz_writes))))
+        try:
+            _sheets_retry(ss.values_batch_update, {
+                "valueInputOption": "RAW",
+                "data"            : fz_writes[fi:fi + CHUNK],
+            })
+        except Exception:
+            pass
+
+    progress_bar.progress(1.0)
+    status_text.empty()
+    progress_bar.empty()
+    st.success(f"✅ Freeze เสร็จแล้วค่ะ — แปลงสูตรเป็นค่านิ่ง {len(fz_writes)} คอลัมน์ จาก {len(sheet_names)} Sheet")
+
+
 def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None):
     """
     ⚡ Batch mode — ประมวลผลทุก Sheet ด้วย ~5 API calls ต่อ chunk
@@ -850,7 +970,7 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
         f"'{_esc(sh)}'!{col_letter(_FZ_COL_START)}1:{col_letter(_FZ_COL_END)}{_FZ_ROWS}"
         for sh in _fz_sheet_names
     ]
-    # อ่านสูตร + ค่าที่แสดง → เขียนกลับเฉพาะ cell ที่มีสูตร (cell รูปจะว่างใน FORMULA read → ไม่โดนทับ)
+    # อ่านสูตร + ค่าที่แสดง → เขียนกลับแบบ column-based (ข้ามคอลัมน์ที่ไม่มีสูตรเลย เพื่อปกป้องรูป)
     _fz_writes: list[dict] = []
     for _fi in range(0, len(_fz_ranges), _FZ_CHUNK):
         _chunk_r = _fz_ranges[_fi:_fi + _FZ_CHUNK]
@@ -869,17 +989,25 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
                 _rows_d = _vr_d.get("values", [])
                 if not _rows_f:
                     continue
-                # เขียนเฉพาะ cell ที่เป็นสูตร — cell ที่มีรูป (ค่าว่าง) จะถูกข้ามไป
-                for _ri, _row_f in enumerate(_rows_f):
-                    for _ci, _cell_f in enumerate(_row_f):
-                        if isinstance(_cell_f, str) and _cell_f.startswith("="):
-                            _disp = (_rows_d[_ri][_ci]
-                                     if _ri < len(_rows_d) and _ci < len(_rows_d[_ri])
-                                     else "")
-                            _fz_writes.append({
-                                "range" : f"'{_esc(_sn)}'!{col_letter(_FZ_COL_START + _ci)}{_ri + 1}",
-                                "values": [[_disp]],
-                            })
+                _max_w = max((len(_r) for _r in _rows_f), default=0)
+                # เขียนแบบ column-based: คอลัมน์ที่มีสูตรอย่างน้อย 1 cell → เขียนทั้งคอลัมน์
+                # คอลัมน์ที่ไม่มีสูตรเลย (เช่น คอลัมน์รูปล้วน) → ข้ามไป รูปปลอดภัย
+                for _ci in range(_max_w):
+                    _has_fml = any(
+                        _ci < len(_rf) and isinstance(_rf[_ci], str) and _rf[_ci].startswith("=")
+                        for _rf in _rows_f
+                    )
+                    if not _has_fml:
+                        continue
+                    _col_disp = [
+                        [_rows_d[_ri][_ci] if _ri < len(_rows_d) and _ci < len(_rows_d[_ri]) else ""]
+                        for _ri in range(len(_rows_f))
+                    ]
+                    _abs_col = _FZ_COL_START + _ci
+                    _fz_writes.append({
+                        "range" : f"'{_esc(_sn)}'!{col_letter(_abs_col)}1:{col_letter(_abs_col)}{len(_rows_f)}",
+                        "values": _col_disp,
+                    })
         except Exception:
             pass
     for _fi in range(0, len(_fz_writes), _FZ_CHUNK):
@@ -1721,9 +1849,9 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         )
         freeze_sheet_info.append((sheet_name, ws.title, COL_HIST_END + 1))
 
-    # อ่าน FORMULA + FORMATTED_VALUE → เขียนกลับเฉพาะ cell สูตร (cell รูปว่างใน FORMULA → ถูกข้าม)
+    # อ่าน FORMULA + FORMATTED_VALUE → เขียนกลับแบบ column-based (ข้ามคอลัมน์รูปล้วน)
     freeze_write_data: list[dict] = []   # สำหรับ fallback per-sheet เท่านั้น
-    batch_freeze_cells: list[dict] = []  # individual cell writes (RAW)
+    batch_freeze_cols: list[dict] = []   # column-range writes (RAW)
 
     for i in range(0, len(freeze_read_ranges), CHUNK):
         chunk_ranges = freeze_read_ranges[i:i + CHUNK]
@@ -1750,23 +1878,30 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                         "ws"         : ws_dict[sname],
                         "short_range": f"{col_letter(sc)}1:{col_letter(sc + max_width - 1)}{NUM_ROWS}",
                     })
-                # เขียนเฉพาะ cell ที่มีสูตร — cell รูป (ว่างใน FORMULA read) จะถูกข้ามไป
-                for ri, row_f in enumerate(rows_f):
-                    for ci, cell_f in enumerate(row_f):
-                        if isinstance(cell_f, str) and cell_f.startswith("="):
-                            disp = (rows_d[ri][ci]
-                                    if ri < len(rows_d) and ci < len(rows_d[ri])
-                                    else "")
-                            batch_freeze_cells.append({
-                                "range" : f"'{ws_title}'!{col_letter(sc + ci)}{ri + 1}",
-                                "values": [[disp]],
-                            })
+                # เขียนแบบ column-based: คอลัมน์ที่มีสูตรอย่างน้อย 1 cell → เขียนทั้งคอลัมน์
+                # คอลัมน์ที่ไม่มีสูตรเลย (เช่น คอลัมน์รูปล้วน) → ข้ามไป รูปปลอดภัย
+                for ci in range(max_width):
+                    has_fml = any(
+                        ci < len(rf) and isinstance(rf[ci], str) and rf[ci].startswith("=")
+                        for rf in rows_f
+                    )
+                    if not has_fml:
+                        continue
+                    col_disp = [
+                        [rows_d[ri][ci] if ri < len(rows_d) and ci < len(rows_d[ri]) else ""]
+                        for ri in range(len(rows_f))
+                    ]
+                    abs_col = sc + ci
+                    batch_freeze_cols.append({
+                        "range" : f"'{ws_title}'!{col_letter(abs_col)}1:{col_letter(abs_col)}{len(rows_f)}",
+                        "values": col_disp,
+                    })
         except Exception:
             pass   # freeze ไม่ได้ก็ข้าม — ไม่หยุดทั้งกระบวนการ
 
-    # เขียนทับเฉพาะ cell สูตรด้วย RAW (รูปใน cell ไม่โดนทับ)
-    for i in range(0, len(batch_freeze_cells), CHUNK):
-        chunk = batch_freeze_cells[i:i + CHUNK]
+    # เขียนทับแบบ column-based ด้วย RAW (คอลัมน์รูปล้วนไม่โดนทับ)
+    for i in range(0, len(batch_freeze_cols), CHUNK):
+        chunk = batch_freeze_cols[i:i + CHUNK]
         try:
             _sheets_retry(ss.values_batch_update, {
                 "valueInputOption": "RAW",
