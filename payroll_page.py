@@ -77,6 +77,105 @@ def col_letter(n: int) -> str:
     return s
 
 
+def _freeze_formulas_to_values(ss, sheet_pairs, col_start: int, num_rows: int, chunk: int = 50):
+    """
+    แปลงสูตรใน history area → ค่านิ่ง โดยไม่กระทบรูปที่อยู่ใน cell
+
+    วิธีการ (segment-based):
+      - อ่าน FORMULA + FORMATTED_VALUE ของแต่ละ sheet
+      - แต่ละคอลัมน์: รวม row ที่เป็นสูตรติดกัน → write เป็น 1 range
+      - row ที่ไม่ใช่สูตร (ว่าง / มีรูป) → ข้ามทั้งหมด → รูปปลอดภัย
+
+    sheet_pairs: list of (sheet_name, ws_title)
+                 sheet_name = ชื่อสำหรับ lookup (อาจต่างจาก ws_title ถ้า escape)
+                 ws_title   = ชื่อจริงของ Google Sheet tab
+    col_start:  คอลัมน์แรกของ history (1-indexed)  เช่น 26 = Z
+    num_rows:   จำนวนแถวสูงสุดที่อ่าน
+
+    Returns: dict[sheet_name] -> คอลัมน์สุดท้ายที่มีข้อมูล (1-indexed)
+    """
+    def _esc(sh: str) -> str:
+        return sh.replace("'", "''")
+
+    COL_END_MAX = col_start + 124   # รองรับประวัติ ~125 คอลัมน์
+
+    fz_ranges = [
+        f"'{_esc(wt)}'!{col_letter(col_start)}1:{col_letter(COL_END_MAX)}{num_rows}"
+        for _, wt in sheet_pairs
+    ]
+
+    last_cols: dict[str, int] = {}
+    writes:    list[dict]     = []
+
+    for fi in range(0, len(fz_ranges), chunk):
+        cr = fz_ranges[fi:fi + chunk]
+        cp = sheet_pairs[fi:fi + chunk]
+        try:
+            rf = _sheets_retry(ss.values_batch_get, cr,
+                               params={"valueRenderOption": "FORMULA"})
+            rd = _sheets_retry(ss.values_batch_get, cr,
+                               params={"valueRenderOption": "FORMATTED_VALUE"})
+            for (sname, ws_title), vr_f, vr_d in zip(
+                cp,
+                rf.get("valueRanges", []),
+                rd.get("valueRanges", []),
+            ):
+                rows_f = vr_f.get("values", [])
+                rows_d = vr_d.get("values", [])
+                if not rows_f:
+                    continue
+                max_w = max((len(r) for r in rows_f), default=0)
+                if max_w:
+                    last_cols[sname] = col_start + max_w - 1
+
+                for ci in range(max_w):
+                    # เก็บเฉพาะ row ที่เป็นสูตร (= หัวข้อ '=')
+                    fml_rows: list[tuple[int, str]] = []
+                    for ri, row_f in enumerate(rows_f):
+                        cf = row_f[ci] if ci < len(row_f) else ""
+                        if isinstance(cf, str) and cf.startswith("="):
+                            dv = (rows_d[ri][ci]
+                                  if ri < len(rows_d) and ci < len(rows_d[ri])
+                                  else "")
+                            fml_rows.append((ri, dv))
+
+                    if not fml_rows:
+                        continue
+
+                    # สร้าง segment ของ row ต่อเนื่อง → 1 range ต่อ segment
+                    segs: list[tuple[int, list[str]]] = []
+                    s_ri   = fml_rows[0][0]
+                    s_vals = [fml_rows[0][1]]
+                    for (p_ri, _), (n_ri, n_dv) in zip(fml_rows, fml_rows[1:]):
+                        if n_ri == p_ri + 1:
+                            s_vals.append(n_dv)
+                        else:
+                            segs.append((s_ri, s_vals))
+                            s_ri, s_vals = n_ri, [n_dv]
+                    segs.append((s_ri, s_vals))
+
+                    cl = col_letter(col_start + ci)
+                    for seg_ri, seg_vs in segs:
+                        writes.append({
+                            "range" : (f"'{_esc(ws_title)}'!"
+                                       f"{cl}{seg_ri + 1}:{cl}{seg_ri + len(seg_vs)}"),
+                            "values": [[v] for v in seg_vs],
+                        })
+        except Exception:
+            pass
+
+    for fi in range(0, len(writes), chunk):
+        try:
+            _sheets_retry(ss.values_batch_update, {
+                "valueInputOption": "RAW",
+                "data"            : writes[fi:fi + chunk],
+            })
+        except Exception:
+            pass
+
+    return last_cols
+
+
 def norm_date(val) -> str | None:
     """แปลงค่าต่าง ๆ เป็น 'DD/MM/YYYY' (พ.ศ.)"""
     if isinstance(val, str):
@@ -249,63 +348,12 @@ def render_payroll_page(gc: gspread.Client,
                                     st.text(err)
                         return
 
-                    # ── Freeze ประวัติเก่า → ค่านิ่ง (ก่อนคิดเงินเดือน) ──────────
-                    _fz2_names = [sh for _, sh in pairs if ss.worksheet(sh) is not None]
+                    # ── Freeze ประวัติเก่า → ค่านิ่ง (segment-based, รูปปลอดภัย) ──
                     try:
-                        _all_ws2   = _sheets_retry(ss.worksheets)
-                        _ws2_map   = {w.title: w for w in _all_ws2}
-                        _fz2_names = [sh for _, sh in pairs if sh in _ws2_map]
-                        _FZ2_CS, _FZ2_CE, _FZ2_R, _FZ2_CK = 26, 150, 100, 100
-                        _fz2_ranges = [
-                            f"'{sh}'!{col_letter(_FZ2_CS)}1:{col_letter(_FZ2_CE)}{_FZ2_R}"
-                            for sh in _fz2_names
-                        ]
-                        # อ่าน FORMULA + FORMATTED_VALUE → เขียนกลับแบบ column-based (ข้ามคอลัมน์รูปล้วน)
-                        _fz2_writes: list[dict] = []
-                        for _fi2 in range(0, len(_fz2_ranges), _FZ2_CK):
-                            try:
-                                _cr2  = _fz2_ranges[_fi2:_fi2 + _FZ2_CK]
-                                _cn2  = _fz2_names[_fi2:_fi2 + _FZ2_CK]
-                                _rf2  = _sheets_retry(ss.values_batch_get, _cr2,
-                                                      params={"valueRenderOption": "FORMULA"})
-                                _rd2  = _sheets_retry(ss.values_batch_get, _cr2,
-                                                      params={"valueRenderOption": "FORMATTED_VALUE"})
-                                for _sn2, _vrf2, _vrd2 in zip(
-                                    _cn2,
-                                    _rf2.get("valueRanges", []),
-                                    _rd2.get("valueRanges", []),
-                                ):
-                                    _rows2f = _vrf2.get("values", [])
-                                    _rows2d = _vrd2.get("values", [])
-                                    if not _rows2f:
-                                        continue
-                                    _max2w = max((len(_r) for _r in _rows2f), default=0)
-                                    for _ci2 in range(_max2w):
-                                        _has2f = any(
-                                            _ci2 < len(_rf) and isinstance(_rf[_ci2], str) and _rf[_ci2].startswith("=")
-                                            for _rf in _rows2f
-                                        )
-                                        if not _has2f:
-                                            continue
-                                        _col2d = [
-                                            [_rows2d[_ri2][_ci2] if _ri2 < len(_rows2d) and _ci2 < len(_rows2d[_ri2]) else ""]
-                                            for _ri2 in range(len(_rows2f))
-                                        ]
-                                        _abs2c = _FZ2_CS + _ci2
-                                        _fz2_writes.append({
-                                            "range" : f"'{_sn2}'!{col_letter(_abs2c)}1:{col_letter(_abs2c)}{len(_rows2f)}",
-                                            "values": _col2d,
-                                        })
-                            except Exception:
-                                pass
-                        for _fi2 in range(0, len(_fz2_writes), _FZ2_CK):
-                            try:
-                                _sheets_retry(ss.values_batch_update, {
-                                    "valueInputOption": "RAW",
-                                    "data"            : _fz2_writes[_fi2:_fi2 + _FZ2_CK],
-                                })
-                            except Exception:
-                                pass
+                        _all_ws2 = _sheets_retry(ss.worksheets)
+                        _ws2_map = {w.title: w for w in _all_ws2}
+                        _fz2_pairs = [(sh, sh) for _, sh in pairs if sh in _ws2_map]
+                        _freeze_formulas_to_values(ss, _fz2_pairs, col_start=26, num_rows=100)
                     except Exception:
                         pass   # freeze ไม่ได้ก็ข้าม ไม่หยุดการคิดเงินเดือน
 
@@ -794,17 +842,10 @@ def _clear_attendance(ss: gspread.Spreadsheet, sheet_name: str) -> dict:
 def _freeze_history_standalone(pairs, ss):
     """
     🔒 Freeze ประวัติ → ค่านิ่ง (standalone — กดได้ทุกเวลา ไม่ต้องรันเงินเดือนใหม่)
-
-    อ่านคอลัมน์ Z (26) → col 150 ของทุก Sheet ใน pairs
-    แปลงสูตรเป็น static value แบบ column-based เพื่อปกป้องรูปที่แทรกไว้
+    ใช้ segment-based freeze → รูปที่อยู่ใน cell ปลอดภัย (ไม่ถูกเขียนทับ)
     """
     FZ_COL_START = 26    # col Z
-    FZ_COL_END   = 150
     FZ_ROWS      = 100
-    CHUNK        = 50
-
-    def _esc(sh: str) -> str:
-        return sh.replace("'", "''")
 
     status_text  = st.empty()
     progress_bar = st.progress(0.0)
@@ -812,90 +853,34 @@ def _freeze_history_standalone(pairs, ss):
     # ── Step 1: เตรียม sheet list ────────────────────────────────
     status_text.info("🔍 [1/3] กำลังโหลด Sheet list...")
     try:
-        all_ws   = _sheets_retry(ss.worksheets)
-        ws_map   = {w.title: w for w in all_ws}
+        all_ws = _sheets_retry(ss.worksheets)
+        ws_map = {w.title: w for w in all_ws}
     except Exception as e:
         st.error(f"❌ เปิด Spreadsheet ไม่ได้: {e}")
         progress_bar.empty(); status_text.empty()
         return
 
-    sheet_names = [sh for _, sh in pairs if sh in ws_map]
-    if not sheet_names:
+    valid_pairs = [(sn, sh) for sn, sh in pairs if sh in ws_map]
+    if not valid_pairs:
         st.warning("⚠️ ไม่พบ Sheet ที่ตรงกันเลยค่ะ")
         progress_bar.empty(); status_text.empty()
         return
 
-    fz_ranges = [
-        f"'{_esc(sh)}'!{col_letter(FZ_COL_START)}1:{col_letter(FZ_COL_END)}{FZ_ROWS}"
-        for sh in sheet_names
-    ]
+    # valid_pairs ใช้ (emp_id, sheet_title) → สร้าง (sheet_title, sheet_title) สำหรับ helper
+    sheet_pairs = [(sh, sh) for _, sh in valid_pairs]
 
-    # ── Step 2: อ่าน FORMULA + FORMATTED_VALUE ──────────────────
-    status_text.info(f"📖 [2/3] กำลังอ่านประวัติ {len(sheet_names)} Sheet...")
-    fz_writes: list[dict] = []
-    total_chunks = max(1, len(fz_ranges) // CHUNK + (1 if len(fz_ranges) % CHUNK else 0))
+    status_text.info(f"📖 [2/3] กำลังอ่านและ freeze ประวัติ {len(sheet_pairs)} Sheet...")
+    progress_bar.progress(0.1)
 
-    for fi in range(0, len(fz_ranges), CHUNK):
-        chunk_r = fz_ranges[fi:fi + CHUNK]
-        chunk_n = sheet_names[fi:fi + CHUNK]
-        progress_bar.progress(0.1 + 0.5 * (fi / max(1, len(fz_ranges))))
-        try:
-            resp_f = _sheets_retry(ss.values_batch_get, chunk_r,
-                                   params={"valueRenderOption": "FORMULA"})
-            resp_d = _sheets_retry(ss.values_batch_get, chunk_r,
-                                   params={"valueRenderOption": "FORMATTED_VALUE"})
-            for sn, vr_f, vr_d in zip(
-                chunk_n,
-                resp_f.get("valueRanges", []),
-                resp_d.get("valueRanges", []),
-            ):
-                ws_title = ws_map[sn].title
-                rows_f   = vr_f.get("values", [])
-                rows_d   = vr_d.get("values", [])
-                if not rows_f:
-                    continue
-                max_w = max((len(r) for r in rows_f), default=0)
-                # column-based: เขียนเฉพาะคอลัมน์ที่มีสูตรอย่างน้อย 1 cell
-                for ci in range(max_w):
-                    has_fml = any(
-                        ci < len(rf) and isinstance(rf[ci], str) and rf[ci].startswith("=")
-                        for rf in rows_f
-                    )
-                    if not has_fml:
-                        continue
-                    col_disp = [
-                        [rows_d[ri][ci] if ri < len(rows_d) and ci < len(rows_d[ri]) else ""]
-                        for ri in range(len(rows_f))
-                    ]
-                    abs_col = FZ_COL_START + ci
-                    fz_writes.append({
-                        "range" : f"'{_esc(ws_title)}'!{col_letter(abs_col)}1:{col_letter(abs_col)}{len(rows_f)}",
-                        "values": col_disp,
-                    })
-        except Exception:
-            pass
-
-    # ── Step 3: เขียนกลับ ───────────────────────────────────────
-    if not fz_writes:
-        st.info("ℹ️ ไม่พบสูตรในประวัติ (อาจ freeze ไปแล้ว หรือยังไม่มีประวัติ)")
-        progress_bar.empty(); status_text.empty()
-        return
-
-    status_text.info(f"💾 [3/3] กำลัง freeze {len(fz_writes)} คอลัมน์...")
-    for fi in range(0, len(fz_writes), CHUNK):
-        progress_bar.progress(0.6 + 0.4 * (fi / max(1, len(fz_writes))))
-        try:
-            _sheets_retry(ss.values_batch_update, {
-                "valueInputOption": "RAW",
-                "data"            : fz_writes[fi:fi + CHUNK],
-            })
-        except Exception:
-            pass
+    result = _freeze_formulas_to_values(ss, sheet_pairs, FZ_COL_START, FZ_ROWS)
 
     progress_bar.progress(1.0)
     status_text.empty()
     progress_bar.empty()
-    st.success(f"✅ Freeze เสร็จแล้วค่ะ — แปลงสูตรเป็นค่านิ่ง {len(fz_writes)} คอลัมน์ จาก {len(sheet_names)} Sheet")
+    if result:
+        st.success(f"✅ Freeze เสร็จแล้วค่ะ — ครอบคลุม {len(result)} Sheet รูปใน cell ปลอดภัย")
+    else:
+        st.info("ℹ️ ไม่พบสูตรในประวัติ (อาจ freeze ไปแล้ว หรือยังไม่มีประวัติ)")
 
 
 def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None):
@@ -958,66 +943,14 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
               for i in range(0, len(valid_pairs), CHUNK_SIZE)]
     total_chunks = len(chunks)
 
-    # ── Phase 1.5: Freeze ประวัติเก่า → ค่านิ่ง (ทำก่อนคิดเงินเดือน) ─────────
-    # ล็อคสูตรในประวัติเก่าให้เป็นค่าตายตัว ก่อนที่ข้อมูลเดือนนี้จะถูกเขียนทับ template
-    _FZ_COL_START = 26    # col Z (หลัง Y=25 ซึ่งเป็น COL_HIST_END)
-    _FZ_COL_END   = 150   # ครอบคลุม ~9 เดือนย้อนหลัง
-    _FZ_ROWS      = 100   # NUM_ROWS
-    _FZ_CHUNK     = 100   # max ranges per batch call
+    # ── Phase 1.5: Freeze ประวัติเก่า → ค่านิ่ง (segment-based, รูปปลอดภัย) ────
     status_text.info("🔒 [1.5/5] กำลัง freeze ประวัติเก่า → ค่านิ่ง...")
-    _fz_sheet_names = [sh for _, sh in valid_pairs]
-    _fz_ranges = [
-        f"'{_esc(sh)}'!{col_letter(_FZ_COL_START)}1:{col_letter(_FZ_COL_END)}{_FZ_ROWS}"
-        for sh in _fz_sheet_names
-    ]
-    # อ่านสูตร + ค่าที่แสดง → เขียนกลับแบบ column-based (ข้ามคอลัมน์ที่ไม่มีสูตรเลย เพื่อปกป้องรูป)
-    _fz_writes: list[dict] = []
-    for _fi in range(0, len(_fz_ranges), _FZ_CHUNK):
-        _chunk_r = _fz_ranges[_fi:_fi + _FZ_CHUNK]
-        _chunk_n = _fz_sheet_names[_fi:_fi + _FZ_CHUNK]
-        try:
-            _resp_formula = _sheets_retry(ss.values_batch_get, _chunk_r,
-                                          params={"valueRenderOption": "FORMULA"})
-            _resp_display = _sheets_retry(ss.values_batch_get, _chunk_r,
-                                          params={"valueRenderOption": "FORMATTED_VALUE"})
-            for _sn, _vr_f, _vr_d in zip(
-                _chunk_n,
-                _resp_formula.get("valueRanges", []),
-                _resp_display.get("valueRanges", []),
-            ):
-                _rows_f = _vr_f.get("values", [])
-                _rows_d = _vr_d.get("values", [])
-                if not _rows_f:
-                    continue
-                _max_w = max((len(_r) for _r in _rows_f), default=0)
-                # เขียนแบบ column-based: คอลัมน์ที่มีสูตรอย่างน้อย 1 cell → เขียนทั้งคอลัมน์
-                # คอลัมน์ที่ไม่มีสูตรเลย (เช่น คอลัมน์รูปล้วน) → ข้ามไป รูปปลอดภัย
-                for _ci in range(_max_w):
-                    _has_fml = any(
-                        _ci < len(_rf) and isinstance(_rf[_ci], str) and _rf[_ci].startswith("=")
-                        for _rf in _rows_f
-                    )
-                    if not _has_fml:
-                        continue
-                    _col_disp = [
-                        [_rows_d[_ri][_ci] if _ri < len(_rows_d) and _ci < len(_rows_d[_ri]) else ""]
-                        for _ri in range(len(_rows_f))
-                    ]
-                    _abs_col = _FZ_COL_START + _ci
-                    _fz_writes.append({
-                        "range" : f"'{_esc(_sn)}'!{col_letter(_abs_col)}1:{col_letter(_abs_col)}{len(_rows_f)}",
-                        "values": _col_disp,
-                    })
-        except Exception:
-            pass
-    for _fi in range(0, len(_fz_writes), _FZ_CHUNK):
-        try:
-            _sheets_retry(ss.values_batch_update, {
-                "valueInputOption": "RAW",
-                "data"            : _fz_writes[_fi:_fi + _FZ_CHUNK],
-            })
-        except Exception:
-            pass
+    _freeze_formulas_to_values(
+        ss,
+        [(sh, sh) for _, sh in valid_pairs],
+        col_start=26,   # col Z
+        num_rows=100,
+    )
 
     GRAY    = {"red": 211/255, "green": 211/255, "blue": 211/255}
     WHITE   = {"red": 1.0,     "green": 1.0,     "blue": 1.0}
@@ -1849,66 +1782,19 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         )
         freeze_sheet_info.append((sheet_name, ws.title, COL_HIST_END + 1))
 
-    # อ่าน FORMULA + FORMATTED_VALUE → เขียนกลับแบบ column-based (ข้ามคอลัมน์รูปล้วน)
-    freeze_write_data: list[dict] = []   # สำหรับ fallback per-sheet เท่านั้น
-    batch_freeze_cols: list[dict] = []   # column-range writes (RAW)
-
-    for i in range(0, len(freeze_read_ranges), CHUNK):
-        chunk_ranges = freeze_read_ranges[i:i + CHUNK]
-        chunk_info   = freeze_sheet_info[i:i + CHUNK]
-        try:
-            resp_f = _sheets_retry(ss.values_batch_get, chunk_ranges,
-                                   params={"valueRenderOption": "FORMULA"})
-            resp_d = _sheets_retry(ss.values_batch_get, chunk_ranges,
-                                   params={"valueRenderOption": "FORMATTED_VALUE"})
-            for (sname, ws_title, sc), vr_f, vr_d in zip(
-                chunk_info,
-                resp_f.get("valueRanges", []),
-                resp_d.get("valueRanges", []),
-            ):
-                rows_f = vr_f.get("values", [])
-                rows_d = vr_d.get("values", [])
-                if not rows_f:
-                    continue
-                # หา last_col จาก FORMULA read (เพื่อ Phase 1c)
-                max_width = max((len(r) for r in rows_f), default=0)
-                if max_width:
-                    frozen_last_col[sname] = sc + max_width - 1
-                    freeze_write_data.append({
-                        "ws"         : ws_dict[sname],
-                        "short_range": f"{col_letter(sc)}1:{col_letter(sc + max_width - 1)}{NUM_ROWS}",
-                    })
-                # เขียนแบบ column-based: คอลัมน์ที่มีสูตรอย่างน้อย 1 cell → เขียนทั้งคอลัมน์
-                # คอลัมน์ที่ไม่มีสูตรเลย (เช่น คอลัมน์รูปล้วน) → ข้ามไป รูปปลอดภัย
-                for ci in range(max_width):
-                    has_fml = any(
-                        ci < len(rf) and isinstance(rf[ci], str) and rf[ci].startswith("=")
-                        for rf in rows_f
-                    )
-                    if not has_fml:
-                        continue
-                    col_disp = [
-                        [rows_d[ri][ci] if ri < len(rows_d) and ci < len(rows_d[ri]) else ""]
-                        for ri in range(len(rows_f))
-                    ]
-                    abs_col = sc + ci
-                    batch_freeze_cols.append({
-                        "range" : f"'{ws_title}'!{col_letter(abs_col)}1:{col_letter(abs_col)}{len(rows_f)}",
-                        "values": col_disp,
-                    })
-        except Exception:
-            pass   # freeze ไม่ได้ก็ข้าม — ไม่หยุดทั้งกระบวนการ
-
-    # เขียนทับแบบ column-based ด้วย RAW (คอลัมน์รูปล้วนไม่โดนทับ)
-    for i in range(0, len(batch_freeze_cols), CHUNK):
-        chunk = batch_freeze_cols[i:i + CHUNK]
-        try:
-            _sheets_retry(ss.values_batch_update, {
-                "valueInputOption": "RAW",
-                "data"            : chunk,
-            })
-        except Exception:
-            pass
+    # Freeze history เก่า → segment-based (รูปปลอดภัย) + track last_col สำหรับ Phase 1c
+    _fz_pairs = [
+        (sname, ws_dict[sname].title)
+        for sname in valid_names
+        if sname in ws_dict
+    ]
+    _lc = _freeze_formulas_to_values(
+        ss,
+        _fz_pairs,
+        col_start=COL_HIST_END + 1,
+        num_rows=NUM_ROWS,
+    )
+    frozen_last_col.update(_lc)
 
     # ── Phase 1c: คำนวณ paste position + resize ถ้าจำเป็น ────────────
     paste_info: dict[str, tuple] = {}   # name → (paste_start, paste_end, ws)
