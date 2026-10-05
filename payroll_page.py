@@ -474,13 +474,20 @@ def render_payroll_page(gc: gspread.Client,
                     if st.button(hist_label, key="btn_history", use_container_width=True):
                         _run_sheets(matched_pairs, att_df, do_history=True)
 
-                st.divider()
-                st.caption("🔒 Freeze ประวัติ — แปลงสูตรในคอลัมน์ประวัติ (Z เป็นต้นไป) ให้เป็นค่านิ่ง กดได้ทุกเวลา ไม่ต้องรันเงินเดือนใหม่")
-                if st.button("🔒 Freeze ประวัติ → ค่านิ่ง (กดได้ทุกเวลา)",
-                             key="btn_freeze_only", use_container_width=True):
-                    _freeze_history_standalone(matched_pairs, ss)
             else:
                 st.warning("⚠️ อ่านไฟล์ไม่ได้ หรือไม่พบข้อมูล")
+
+        # ── Freeze ประวัติ (แสดงเสมอ ไม่ต้องอัปโหลดไฟล์ก่อน) ──────────
+        st.divider()
+        st.caption("🔒 Freeze ประวัติ — แปลงสูตรในคอลัมน์ประวัติ (Z เป็นต้นไป) ให้เป็นค่านิ่ง กดได้ทุกเวลา ไม่ต้องรันเงินเดือนใหม่")
+        # freeze เฉพาะชีทพนักงาน (ชื่อขึ้นต้นด้วยตัวเลขตามด้วย _) เช่น "99001_สมชาย"
+        _fz_all_pairs = [
+            (sh, sh) for sh in visible_sheets
+            if re.match(r"^\d+_", sh)
+        ]
+        if st.button("🔒 Freeze ประวัติ → ค่านิ่ง (กดได้ทุกเวลา)",
+                     key="btn_freeze_only", use_container_width=True):
+            _freeze_history_standalone(_fz_all_pairs, ss)
 
     # ══════════════════════════════════════════════════════════════
     # วันหยุดตามประเพณี — บันทึกวันหยุดพิเศษประจำเดือน
