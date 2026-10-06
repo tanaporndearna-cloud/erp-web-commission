@@ -97,10 +97,40 @@ def _freeze_formulas_to_values(ss, sheet_pairs, col_start: int, num_rows: int, c
     def _esc(sh: str) -> str:
         return sh.replace("'", "''")
 
-    COL_END_MAX = col_start + 574   # รองรับประวัติ ~575 คอลัมน์ (~41 เดือน × 14 col)
+    COL_END_HARD = col_start + 574   # hard cap (~41 เดือน × 14 col)
+
+    # ── Pre-scan: อ่าน row 1 เพื่อหา bookmark column จริง (เร็ว) ──────────
+    # ป้องกัน freeze อ่าน range ใหญ่โดยไม่จำเป็น
+    prescan_ranges = [
+        f"'{_esc(wt)}'!{col_letter(col_start)}1:{col_letter(COL_END_HARD)}1"
+        for _, wt in sheet_pairs
+    ]
+    sheet_col_end: dict[str, int] = {}   # ws_title → actual last col to scan
+    for fi in range(0, len(prescan_ranges), chunk):
+        cp = sheet_pairs[fi:fi + chunk]
+        cr = prescan_ranges[fi:fi + chunk]
+        try:
+            rp = _sheets_retry(ss.values_batch_get, cr,
+                               params={"valueRenderOption": "FORMATTED_VALUE"})
+            for (sname, wt), vr in zip(cp, rp.get("valueRanges", [])):
+                row1 = vr.get("values", [[]])[0] if vr.get("values") else []
+                # หา rightmost non-empty cell ใน row 1
+                last_nonempty = 0
+                for ci, v in enumerate(row1):
+                    if v not in ("", None):
+                        last_nonempty = ci + 1   # 1-indexed relative to col_start
+                if last_nonempty:
+                    # +13 buffer (1 history block) เพื่อไม่ตัดสั้นเกินไป
+                    sheet_col_end[wt] = min(col_start + last_nonempty + 12, COL_END_HARD)
+                else:
+                    sheet_col_end[wt] = col_start + 12   # ยังไม่มีประวัติ — อ่านแค่ 1 block
+        except Exception:
+            # prescan ล้มเหลว → fallback ใช้ hard cap
+            for _, wt in sheet_pairs[fi:fi + chunk]:
+                sheet_col_end[wt] = COL_END_HARD
 
     fz_ranges = [
-        f"'{_esc(wt)}'!{col_letter(col_start)}1:{col_letter(COL_END_MAX)}{num_rows}"
+        f"'{_esc(wt)}'!{col_letter(col_start)}1:{col_letter(sheet_col_end.get(wt, COL_END_HARD))}{num_rows}"
         for _, wt in sheet_pairs
     ]
 
@@ -1277,7 +1307,7 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
                     }},
                     "fields": "userEnteredFormat.numberFormat"
                 }})
-                # clear format แถว summary (row 39-40) ที่อาจค้างจาก run ก่อน
+                # clear format แถว summary (row 39-40) → General (ไม่ใช่ time format)
                 all_fmt_reqs.append({"repeatCell": {
                     "range": {
                         "sheetId"         : sheet_id,
@@ -1287,7 +1317,7 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
                         "endColumnIndex"  : tc,
                     },
                     "cell" : {"userEnteredFormat": {
-                        "numberFormat": {"type": "TIME", "pattern": "h:mm"}
+                        "numberFormat": {"type": "NUMBER", "pattern": "0"}
                     }},
                     "fields": "userEnteredFormat.numberFormat"
                 }})
