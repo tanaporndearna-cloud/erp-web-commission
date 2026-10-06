@@ -97,7 +97,7 @@ def _freeze_formulas_to_values(ss, sheet_pairs, col_start: int, num_rows: int, c
     def _esc(sh: str) -> str:
         return sh.replace("'", "''")
 
-    COL_END_MAX = col_start + 374   # รองรับประวัติ ~375 คอลัมน์ (~27 เดือน × 14 col)
+    COL_END_MAX = col_start + 574   # รองรับประวัติ ~575 คอลัมน์ (~41 เดือน × 14 col)
 
     fz_ranges = [
         f"'{_esc(wt)}'!{col_letter(col_start)}1:{col_letter(COL_END_MAX)}{num_rows}"
@@ -1833,9 +1833,14 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         col_start=COL_HIST_END + 1,
         num_rows=NUM_ROWS,
     )
-    _lc.pop("__failed_reads__",  None)
-    _lc.pop("__failed_writes__", None)
+    _fz_failed_r = _lc.pop("__failed_reads__",  [])
+    _fz_failed_w = _lc.pop("__failed_writes__", [])
     frozen_last_col.update(_lc)
+    if _fz_failed_r:
+        st.warning(f"⚠️ Freeze อ่านไม่ได้ {len(_fz_failed_r)} Sheet: {', '.join(str(x) for x in _fz_failed_r)}")
+    if _fz_failed_w:
+        st.warning(f"⚠️ Freeze เขียนค่านิ่งไม่สำเร็จ {len(_fz_failed_w)} รายการ:\n" +
+                   "\n".join(f"• {x}" for x in _fz_failed_w))
 
     # ── Phase 1c: คำนวณ paste position + resize ถ้าจำเป็น ────────────
     paste_info: dict[str, tuple] = {}   # name → (paste_start, paste_end, ws)
