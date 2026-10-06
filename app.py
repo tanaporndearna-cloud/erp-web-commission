@@ -158,22 +158,25 @@ if run_btn and erp_file is not None:
             status_box.error(f"❌ เกิดข้อผิดพลาด: {e}")
             st.exception(e)
 
-# ===== Copy sum(ตัดO2O) → Com ERP  +  เติม H วันขาด/ลา =====
+# ===== Commission SL =====
 st.divider()
+st.subheader("📊 Commission SL")
+
+# แสดงสถานะไฟล์ด้านบน (ไม่ให้ทำให้คอลัมน์สูงไม่เท่ากัน)
+if "last_output_name" in st.session_state:
+    st.info(f"📁 ไฟล์พร้อม: **{st.session_state['last_output_name']}**")
+else:
+    st.warning("⚠️ ยังไม่มีไฟล์ — คิดค่าคอมก่อน หรืออัปโหลดในช่องซ้ายด้านล่าง")
+
 _col_left, _col_right = st.columns(2)
 
 # ── ซ้าย: คัดลอก sum(ตัดO2O) → Com ERP ──
 with _col_left:
-    st.subheader("📋 คัดลอก sum(ตัดO2O) → Com ERP")
-    st.caption("อ่านข้อมูลจากไฟล์ xlsx แล้วเขียนลง Com ERP — ล้างชีทด้วย App Script ก่อนกดปุ่มนี้")
-
-    if "last_output_name" in st.session_state:
-        st.info(f"📁 ไฟล์พร้อม: **{st.session_state['last_output_name']}**")
-    else:
-        st.warning("⚠️ ยังไม่มีไฟล์ — คิดค่าคอมก่อน หรืออัปโหลดด้านล่าง")
+    st.markdown("**📋 คัดลอก sum(ตัดO2O) → Com ERP**")
+    st.caption("ล้างชีทด้วย App Script ก่อน แล้วค่อยกดปุ่ม")
 
     upload_xlsx = st.file_uploader(
-        "อัปโหลดไฟล์ xlsx ที่มีชีท sum(ตัดO2O)",
+        "ไฟล์ xlsx ที่มีชีท sum(ตัดO2O)",
         type=["xlsx"],
         key="copy_xlsx"
     )
@@ -182,7 +185,7 @@ with _col_left:
         st.session_state["last_output_name"] = upload_xlsx.name
 
     copy_btn = st.button(
-        "📋 คัดลอก sum(ตัดO2O) → Com ERP",
+        "📋 คัดลอก → Com ERP",
         type="secondary",
         use_container_width=True,
         disabled=("last_output_bytes" not in st.session_state),
@@ -190,8 +193,8 @@ with _col_left:
 
 # ── ขวา: เติม H วันขาด/ลา ──
 with _col_right:
-    st.subheader("🗓️ เติม H วันขาด/ลา → สรุปCom")
-    st.caption("ถ้าไม่อัปโหลดไฟล์ InOut จะใส่ H เฉพาะวันอาทิตย์")
+    st.markdown("**🗓️ เติม H วันขาด/ลา → สรุปCom**")
+    st.caption("ไม่อัปโหลดไฟล์ InOut = ใส่ H เฉพาะวันอาทิตย์")
 
     inout_file = st.file_uploader(
         "ไฟล์ InOutDailyReport.xlsx (ไม่บังคับ)",
@@ -201,7 +204,7 @@ with _col_right:
     )
 
     mark_h_btn = st.button(
-        "🗓️ เติม H วันอาทิตย์" + (" + วันขาด/ลา" if inout_file else ""),
+        "🗓️ เติม H" + (" วันอาทิตย์ + ขาด/ลา" if inout_file else " วันอาทิตย์"),
         type="secondary",
         use_container_width=True,
     )
