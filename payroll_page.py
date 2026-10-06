@@ -97,7 +97,7 @@ def _freeze_formulas_to_values(ss, sheet_pairs, col_start: int, num_rows: int, c
     def _esc(sh: str) -> str:
         return sh.replace("'", "''")
 
-    COL_END_MAX = col_start + 124   # รองรับประวัติ ~125 คอลัมน์
+    COL_END_MAX = col_start + 374   # รองรับประวัติ ~375 คอลัมน์ (~27 เดือน × 14 col)
 
     fz_ranges = [
         f"'{_esc(wt)}'!{col_letter(col_start)}1:{col_letter(COL_END_MAX)}{num_rows}"
@@ -126,8 +126,21 @@ def _freeze_formulas_to_values(ss, sheet_pairs, col_start: int, num_rows: int, c
                 if not rows_f:
                     continue
                 max_w = max((len(r) for r in rows_f), default=0)
-                if max_w:
-                    last_cols[sname] = col_start + max_w - 1
+                # ใช้เฉพาะ data rows (แถว 6+, 0-indexed 5+) เพื่อหลีกเลี่ยง
+                # template metadata ใน rows 1-5 ที่อาจยืดเกิน col Y
+                data_rows_f = rows_f[5:]
+                max_w_data = max((len(r) for r in data_rows_f), default=0)
+                if max_w_data:
+                    last_cols[sname] = col_start + max_w_data - 1
+                elif max_w:
+                    # มีแค่ rows 1-5 — หา rightmost formula cell เพื่อหลีกเลี่ยง static metadata
+                    max_fml_w = 0
+                    for ri, row_f in enumerate(rows_f):
+                        for ci, cf in enumerate(row_f):
+                            if isinstance(cf, str) and cf.startswith("="):
+                                max_fml_w = max(max_fml_w, ci + 1)
+                    if max_fml_w:
+                        last_cols[sname] = col_start + max_fml_w - 1
 
                 for ci in range(max_w):
                     # เก็บเฉพาะ row ที่เป็นสูตร (= หัวข้อ '=')
@@ -1834,12 +1847,13 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         ws      = ws_dict[sheet_name]
         rows    = header_data.get(sheet_name, [])
 
-        # หา rightmost non-empty cell ในแถว 1-5 เฉพาะส่วน history (col >= COL_HIST_START)
-        # จำกัดเริ่มจาก COL_HIST_START เพื่อไม่ให้ template header ของ payroll (ที่อาจยืด
-        # เกิน col Y ในบางชีต) inflate last_col_hdr จนทำให้ gap ระหว่าง block เกิน 1 ช่อง
+        # หา rightmost non-empty cell ใน ROW 1 เท่านั้น เฉพาะส่วน history (col >= COL_HIST_START)
+        # ใช้แค่แถว 1 เพราะ bookmark วางที่แถว 1 ท้าย block เสมอ
+        # ห้ามใช้แถว 2-5 เพราะ template metadata (ชื่อพนักงาน, วันที่ ฯลฯ) ในแถวนั้น
+        # อาจยืดเกิน col Y ทำให้ inflate last_col_hdr จนเกิด gap เกิน 1 ช่อง
         last_col_hdr = COL_HIST_END
         hist_start_idx = COL_HIST_START - 1   # 0-based index ของ col M
-        for row in rows:
+        for row in rows[:1]:   # ← สแกนเฉพาะแถว 1 เท่านั้น (bookmark row)
             if len(row) <= hist_start_idx:
                 continue   # แถวนี้สั้นกว่า col M — ข้ามได้เลย
             sub = row[hist_start_idx:]   # ตัดส่วน template (A-L) ออก
