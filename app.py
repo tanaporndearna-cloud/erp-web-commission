@@ -221,6 +221,53 @@ if copy_btn and "last_output_bytes" in st.session_state:
         st.exception(e)
 
 
+# ===== เติม H วันขาด/ลา → สรุปCom =====
+st.divider()
+st.subheader("🗓️ เติม H วันขาด/ลา → สรุปCom")
+st.caption("อัปโหลดไฟล์ InOutDailyReport (ไม่บังคับ) — ถ้าไม่อัปโหลดจะใส่ H เฉพาะวันอาทิตย์")
+
+inout_file = st.file_uploader(
+    "ไฟล์ InOutDailyReport.xlsx (ไม่บังคับ)",
+    type=["xlsx"],
+    key="inout_file",
+    help="ถ้าไม่อัปโหลด ระบบจะใส่ H เฉพาะวันอาทิตย์เท่านั้น"
+)
+
+mark_h_btn = st.button(
+    "🗓️ เติม H วันอาทิตย์" + (" + วันขาด/ลา" if inout_file else ""),
+    type="secondary",
+    use_container_width=True,
+)
+
+if mark_h_btn:
+    import tempfile as _tmp2
+    try:
+        from google_writer import mark_absent_h, parse_absent_days
+        status_h = st.empty()
+
+        absent_days = {}
+        if inout_file:
+            with _tmp2.NamedTemporaryFile(suffix=".xlsx", delete=False) as tf2:
+                tf2.write(inout_file.getvalue())
+                inout_path = tf2.name
+            status_h.info("⏳ อ่านไฟล์ InOut...")
+            absent_days = parse_absent_days(inout_path)
+            status_h.info(f"⏳ พบ {len(absent_days)} รายการขาด/ลา — กำลังเติม H...")
+        else:
+            status_h.info("⏳ ไม่มีไฟล์ InOut — เติม H เฉพาะวันอาทิตย์...")
+
+        def h_progress(msg):
+            status_h.info(f"⏳ {msg}")
+
+        with st.spinner("กำลังเติม H..."):
+            result_h = mark_absent_h(absent_days, progress_cb=h_progress)
+        status_h.success(result_h)
+
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาด: {e}")
+        st.exception(e)
+
+
 # ===== Payroll Section =====
 st.divider()
 
