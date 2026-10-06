@@ -1849,6 +1849,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
     src_ranges_list: list[str]   = []
 
     resize_reqs = []   # รวม resize ทุกชีตไว้ก่อน — batch ครั้งเดียว
+    _debug_paste: list[str] = []   # เก็บ debug info สำหรับแสดงผล
 
     for sheet_name in valid_names:
         ws      = ws_dict[sheet_name]
@@ -1871,12 +1872,27 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                         last_col_hdr = actual_col
                     break
 
-        # ใช้ค่าที่ Phase 1b.5 detect ได้จากการ scan ทุกแถว (แม้แถว 1-5 ว่าง)
-        # เพื่อป้องกัน paste_start เขียนทับ history เก่าที่มีแค่ข้อมูลแถว 6-36
-        last_col = max(last_col_hdr, frozen_last_col.get(sheet_name, COL_HIST_END))
+        # ── FIX Bug2 v20: ใช้ frozen_last_col เป็นหลัก (actual data boundary)
+        # ไม่ใช้ max() เพราะ bookmark เก่าที่ผิดพลาด (จาก run ก่อนหน้าที่มี bug)
+        # อาจทำให้ last_col_hdr > frozen_last_col → gap บวม 1 col
+        # frozen_last_col มาจาก FORMATTED_VALUE scan จริงๆ → เชื่อถือได้กว่า
+        fzlc = frozen_last_col.get(sheet_name)
+        if fzlc is not None and fzlc > COL_HIST_END:
+            # มี freeze data → ใช้เป็น boundary หลัก
+            last_col = fzlc
+            _src = f"freeze={fzlc}"
+        else:
+            # ยังไม่มี history เลย / freeze ไม่พบข้อมูล → ใช้ bookmark
+            last_col = last_col_hdr
+            _src = f"bookmark={last_col_hdr}"
 
         paste_start = last_col + 2
         paste_end   = paste_start + width
+
+        _debug_paste.append(
+            f"{sheet_name}: hdr={last_col_hdr}  fz={fzlc or '–'}  "
+            f"→ {_src}  last_col={last_col}  paste_start={paste_start}"
+        )
 
         if paste_end > ws.col_count:
             resize_reqs.append({
@@ -1897,6 +1913,11 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             f"'{sheet_name}'!{col_letter(COL_HIST_START)}1"
             f":{col_letter(COL_HIST_END)}{NUM_ROWS}"
         )
+
+    # ── DEBUG: แสดง paste position ของทุกชีต (ใช้ diagnose gap issue) ──
+    if _debug_paste:
+        with st.expander("🔍 DEBUG — paste position (คลิกเพื่อดู)", expanded=False):
+            st.code("\n".join(_debug_paste), language=None)
 
     # batch resize ทุกชีตที่ต้องขยายพร้อมกัน (1 API call แทน N calls)
     if resize_reqs:
