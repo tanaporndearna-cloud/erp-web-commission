@@ -482,12 +482,7 @@ def copy_sum_o2o_to_com_erp(xlsx_path: str, progress_cb=None, month: int = None,
         {"numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
     )
 
-    # ===== อัปเดต title ตามเดือน/ปีที่เลือก =====
-    if month and year_be:
-        if progress_cb:
-            progress_cb("อัปเดตชื่อเดือนใน Com ERP...")
-        title = _make_com_title(month, year_be)
-        ws_dst.update("B1", [[title]], value_input_option="USER_ENTERED")
+    # ไม่ต้องอัปเดต title — ใช้ข้อมูลจาก sum(ตัดO2O) ตรงๆ เลย
 
     return f"✅ คัดลอก {total_rows} แถวจาก sum(ตัดO2O) → Com ERP สำเร็จ"
 
