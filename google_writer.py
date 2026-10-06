@@ -111,6 +111,66 @@ def _serial_to_date_str(val: str) -> str:
     return str(val)
 
 
+def _be_date_to_ddmmyy(date_str: str) -> str:
+    """
+    แปลงวันที่ปีพุทธศักราช (dd/mm/YYYY เช่น '03/10/2569')
+    ให้เป็น 'dd/mm/yy' ปีคริสต์ (เช่น '03/10/26')
+    ถ้าเป็นปีคริสต์อยู่แล้ว (year < 2300) คืนค่าเดิม
+    """
+    try:
+        parts = str(date_str).strip().split("/")
+        if len(parts) == 3:
+            day, month, year = parts
+            year_int = int(year)
+            if year_int > 2300:          # ปีพุทธศักราช
+                year_int -= 543
+            return f"{day}/{month}/{str(year_int)[2:]}"
+    except (ValueError, IndexError):
+        pass
+    return str(date_str)
+
+
+def parse_absent_days(xlsx_path: str) -> dict:
+    """
+    อ่านไฟล์ InOutDailyReport.xlsx
+    คืน dict: {(emp_id_str, "dd/mm/yy"): True}
+    สำหรับพนักงานที่ไม่มีเวลาเข้างาน AND ไม่มีเวลาออกงาน (= ขาด/ลา/หยุด)
+
+    โครงสร้างไฟล์:
+    - Col B (idx 2): รหัสพนักงาน
+    - Col C (idx 3): ชื่อ-นามสกุล
+    - Col D (idx 4): แผนก  (เช่น TRC2, TRC4)
+    - Col F (idx 6): วันที่  dd/mm/YYYY ปีพุทธศักราช
+    - Col G (idx 7): เวลาเข้างาน  — None ถ้าไม่มา
+    - Col H (idx 8): เวลาออกงาน  — None ถ้าไม่มา
+    """
+    import openpyxl
+
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    ws = wb.active
+
+    absent: dict = {}
+    for r in range(2, ws.max_row + 1):
+        emp_id   = ws.cell(r, 2).value   # B
+        date_val = ws.cell(r, 6).value   # F
+        time_in  = ws.cell(r, 7).value   # G
+        time_out = ws.cell(r, 8).value   # H
+
+        if not emp_id or not date_val:
+            continue
+
+        emp_id_str = str(emp_id).strip()
+        date_ddmmyy = _be_date_to_ddmmyy(str(date_val).strip())
+
+        def _empty(v) -> bool:
+            return v is None or str(v).strip() in ("", "None")
+
+        if _empty(time_in) and _empty(time_out):
+            absent[(emp_id_str, date_ddmmyy)] = True
+
+    return absent
+
+
 def _is_sunday(date_str: str) -> bool:
     """คืน True ถ้าวันที่นั้นเป็นวันอาทิตย์
     รองรับ dd/mm/yy, dd/mm/yyyy และ Google Sheets serial number"""
@@ -175,19 +235,24 @@ def write_summarize_com(branch_totals: dict, dates: list = None, date_start_day:
         )
 
     date_col_start = 5  # col E (1-indexed) = วันที่ 20 เสมอ
-    num_day_cols = 32   # col E ถึง col AJ
-    sheet_last_date_col = date_col_start + num_day_cols - 1  # col AJ
 
-    # ── เขียนวันที่ลง date header row (Row 6, col E-AJ) ──
+    # นับจากวันที่จริงที่ส่งมา ไม่ hardcode 32
+    # กรอง empty ออกก่อน แล้วใช้ความยาวจริง (28/29/30/31 วัน)
     if dates:
+        clean_dates = [str(d) for d in dates if str(d).strip()]
+    else:
+        clean_dates = []
+    num_day_cols = len(clean_dates) if clean_dates else 32
+
+    sheet_last_date_col = date_col_start + num_day_cols - 1
+
+    # ── เขียนวันที่ลง date header row ──
+    if clean_dates:
         date_header_1idx = date_header_row_idx + 1  # 1-indexed
-        date_vals = [str(d) if d else "" for d in dates[:num_day_cols]]
-        # pad ให้ครบ 32 ช่อง
-        while len(date_vals) < num_day_cols:
-            date_vals.append("")
         start_cell = gspread.utils.rowcol_to_a1(date_header_1idx, date_col_start)
         end_cell   = gspread.utils.rowcol_to_a1(date_header_1idx, date_col_start + num_day_cols - 1)
-        ws.update(f"{start_cell}:{end_cell}", [date_vals], value_input_option="USER_ENTERED")
+        ws.update(f"{start_cell}:{end_cell}", [clean_dates], value_input_option="USER_ENTERED")
+    dates = clean_dates  # ใช้ตัวที่ clean แล้วตลอด
 
     # หา Commission TRC rows
     trc_row_map = {}
@@ -582,6 +647,106 @@ def copy_com_erp_to_summarize(progress_cb=None) -> str:
     result = write_summarize_com(branch_totals, dates)
 
     return f"✅ คัดลอก Com ERP → สรุปCom สำเร็จ ({len(branch_totals)} สาขา)\n{result}"
+
+
+def mark_absent_h(absent_days: dict, progress_cb=None) -> str:
+    """
+    เขียน 'H' ลงชีท สรุปCom สำหรับพนักงานที่ขาด/ลา หรือวันอาทิตย์
+
+    absent_days: dict จาก parse_absent_days()  → {(emp_id_str, "dd/mm/yy"): True}
+
+    โครงสร้าง สรุปCom:
+    - Row 5 (index 4): Date header — col E (idx 4) เป็นต้นไป เช่น "20/08/26"
+    - แถวพนักงาน: col A มีรหัสพนักงาน (ตัวเลข), col E-AJ = ค่าคอมรายวัน
+    - ถ้า col A ว่าง = header row / รวม row → ข้าม
+
+    กฎการเขียน H:
+    - เขียน H เฉพาะ cell ที่ "ว่าง" อยู่
+    - เงื่อนไข: (emp_id, date) อยู่ใน absent_days  OR  date นั้นเป็นวันอาทิตย์
+    - ไม่แตะ cell ที่มีค่าอยู่แล้ว
+    """
+    gc = get_client()
+    sh = gc.open_by_key(SHEET_ID)
+    ws = sh.worksheet(SHEET_SUMMARIZE)
+
+    if progress_cb:
+        progress_cb("อ่านข้อมูลจากชีท สรุปCom...")
+
+    all_values = ws.get_all_values()
+
+    # ---- หา date header row (row 5 = index 4) ----
+    DATE_HEADER_IDX = 4          # 0-indexed (Row 5)
+    DATE_COL_START  = 4          # col E = index 4 (0-indexed)
+
+    date_row = all_values[DATE_HEADER_IDX] if len(all_values) > DATE_HEADER_IDX else []
+
+    # อ่านวันที่จริงจาก Row 5 — หยุดที่ cell ว่างแรก
+    # รองรับ 28/29/30/31 วัน โดยไม่ hardcode
+    dates = []
+    for i in range(50):           # เผื่อสูงสุด 50 col ไว้ก่อน
+        ci = DATE_COL_START + i
+        v = str(date_row[ci]).strip() if ci < len(date_row) else ""
+        if not v:
+            break                 # cell ว่าง = หมดวันที่แล้ว
+        dates.append(v)
+
+    NUM_DAY_COLS = len(dates)     # จำนวนจริงของเดือนนั้น
+
+    if progress_cb:
+        valid_dates = [d for d in dates if d]
+        progress_cb(f"พบวันที่ {len(valid_dates)} วัน ({valid_dates[0] if valid_dates else '?'} - {valid_dates[-1] if valid_dates else '?'})")
+
+    # ---- สแกนแถวพนักงาน ----
+    updates: list[dict] = []   # [{range, values}]
+    marked_count = 0
+
+    for row_idx, row in enumerate(all_values):
+        if row_idx <= DATE_HEADER_IDX:
+            continue  # ข้ามแถว header
+
+        emp_id_raw = row[0] if row else ""
+        emp_id = str(emp_id_raw).strip()
+
+        # ข้ามแถวที่ col A ไม่ใช่ตัวเลข (header, รวม, ว่าง)
+        if not emp_id or not emp_id.isdigit():
+            continue
+
+        # วนทุก day column
+        for i in range(NUM_DAY_COLS):
+            ci = DATE_COL_START + i         # 0-indexed column
+            date_str = dates[i] if i < len(dates) else ""
+
+            # ข้ามถ้าไม่มีวันที่ใน header
+            if not date_str:
+                continue
+
+            # ค่าปัจจุบันใน cell
+            cur = row[ci] if ci < len(row) else ""
+            cur = str(cur).strip()
+
+            # เขียน H เฉพาะ cell ว่างเท่านั้น
+            if cur != "":
+                continue
+
+            should_h = _is_sunday(date_str) or absent_days.get((emp_id, date_str), False)
+            if should_h:
+                # 1-indexed สำหรับ A1 notation
+                cell_addr = gspread.utils.rowcol_to_a1(row_idx + 1, ci + 1)
+                updates.append({"range": cell_addr, "values": [["H"]]})
+                marked_count += 1
+
+    if not updates:
+        return "✅ ไม่มี cell ที่ต้องเติม H (อาจเติมไปแล้วหรือไม่มีวันขาด)"
+
+    if progress_cb:
+        progress_cb(f"กำลังเขียน H จำนวน {marked_count} cell...")
+
+    # batch update ครั้งละ 500 cells
+    BATCH = 500
+    for i in range(0, len(updates), BATCH):
+        ws.batch_update(updates[i:i + BATCH], value_input_option="USER_ENTERED")
+
+    return f"✅ เติม H สำเร็จ {marked_count} cell (วันอาทิตย์ + ขาด/ลา)"
 
 
 def read_sum_sheet(xlsx_path: str) -> tuple:
