@@ -1317,7 +1317,7 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
                         "endColumnIndex"  : tc,
                     },
                     "cell" : {"userEnteredFormat": {
-                        "numberFormat": {"type": "NUMBER", "pattern": "0"}
+                        "numberFormat": {"type": "NUMBER", "pattern": "0.00"}
                     }},
                     "fields": "userEnteredFormat.numberFormat"
                 }})
