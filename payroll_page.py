@@ -126,10 +126,12 @@ def _freeze_formulas_to_values(ss, sheet_pairs, col_start: int, num_rows: int, c
                 if not rows_f:
                     continue
                 max_w = max((len(r) for r in rows_f), default=0)
-                # ใช้เฉพาะ data rows (แถว 6+, 0-indexed 5+) เพื่อหลีกเลี่ยง
-                # template metadata ใน rows 1-5 ที่อาจยืดเกิน col Y
-                data_rows_f = rows_f[5:]
-                max_w_data = max((len(r) for r in data_rows_f), default=0)
+                # FIX Bug2: ใช้ rows_d (FORMATTED_VALUE) สำหรับ max_w_data แทน rows_f (FORMULA)
+                # เพราะ FORMULA mode จะ return formula text เช่น '=""' ซึ่ง non-empty
+                # ทำให้ len(row) บวมจาก trailing formula cells ที่ return ""
+                # FORMATTED_VALUE mode trim trailing empty display values → len() ถูกต้อง
+                data_rows_d = rows_d[5:]   # FORMATTED_VALUE rows สำหรับ data rows (แถว 6+)
+                max_w_data = max((len(r) for r in data_rows_d), default=0)
                 if max_w_data:
                     last_cols[sname] = col_start + max_w_data - 1
                 elif max_w:
@@ -2120,5 +2122,35 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                     except Exception:
                         pass
 
-    _upd(0.95, "⏳ เกือบเสร็จแล้วค่ะ...")
+    # ── Phase 4: Freeze block ที่เพิ่งเขียน (Bug1 fix) ─────────────────────────
+    # Phase 1b.5 freeze แค่ history เก่า (ก่อน paste) แต่ block ที่เพิ่งเขียนใน Phase 1e/3
+    # ยังเป็น formula อยู่ → freeze อีกครั้งหลัง write เสร็จเพื่อแปลงเป็น static value ทันที
+    # ป้องกันกรณีที่ App Script ลบข้อมูลแล้วรันใหม่ (block ใหม่จะถูก freeze ก่อนลบ)
+    if paste_info:
+        _upd(0.96, f"⏳ กำลัง freeze block ใหม่ ({len(paste_info)} Sheet)...")
+        # หา min paste_start เพื่อ cover ทุก sheet ในครั้งเดียว
+        # (แต่ละ sheet อาจมี paste_start ต่างกัน — ใช้ min เพื่อให้ range ครอบคลุมทุกชีต)
+        min_ps = min(ps for ps, pe, _ in paste_info.values())
+        _fz2_pairs = [
+            (sname, ws_dict[sname].title)
+            for sname in valid_names
+            if sname in paste_info and sname in ws_dict
+        ]
+        if _fz2_pairs:
+            _lc2 = _freeze_formulas_to_values(
+                ss,
+                _fz2_pairs,
+                col_start=min_ps,
+                num_rows=NUM_ROWS,
+            )
+            _fz2_failed_r = _lc2.pop("__failed_reads__",  [])
+            _fz2_failed_w = _lc2.pop("__failed_writes__", [])
+            if _fz2_failed_r:
+                st.warning(f"⚠️ Freeze block ใหม่ อ่านไม่ได้ {len(_fz2_failed_r)} Sheet: "
+                           + ", ".join(str(x) for x in _fz2_failed_r))
+            if _fz2_failed_w:
+                st.warning(f"⚠️ Freeze block ใหม่ เขียนค่านิ่งไม่สำเร็จ {len(_fz2_failed_w)} รายการ:\n"
+                           + "\n".join(f"• {x}" for x in _fz2_failed_w))
+
+    _upd(0.99, "⏳ เกือบเสร็จแล้วค่ะ...")
     return results
