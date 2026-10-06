@@ -158,34 +158,55 @@ if run_btn and erp_file is not None:
             status_box.error(f"❌ เกิดข้อผิดพลาด: {e}")
             st.exception(e)
 
-# ===== Copy sum(ตัดO2O) → Com ERP =====
+# ===== Copy sum(ตัดO2O) → Com ERP  +  เติม H วันขาด/ลา =====
 st.divider()
-st.subheader("📋 คัดลอก sum(ตัดO2O) → Com ERP")
-st.caption("อ่านข้อมูลจากไฟล์ xlsx แล้วเขียนลง Com ERP เป็นค่าธรรมดา (ไม่มีสูตร) — ล้างชีทก่อนด้วย App Script แล้วค่อยกดปุ่มนี้")
+_col_left, _col_right = st.columns(2)
 
-# แสดงสถานะไฟล์ที่พร้อมใช้
-if "last_output_name" in st.session_state:
-    st.info(f"📁 ไฟล์พร้อม: **{st.session_state['last_output_name']}**")
-else:
-    st.warning("⚠️ ยังไม่มีไฟล์ — กรุณาคิดค่าคอมก่อน หรืออัปโหลดไฟล์ด้านล่าง")
+# ── ซ้าย: คัดลอก sum(ตัดO2O) → Com ERP ──
+with _col_left:
+    st.subheader("📋 คัดลอก sum(ตัดO2O) → Com ERP")
+    st.caption("อ่านข้อมูลจากไฟล์ xlsx แล้วเขียนลง Com ERP — ล้างชีทด้วย App Script ก่อนกดปุ่มนี้")
 
-# อัปโหลดไฟล์เพิ่มเติม (กรณีเปิด app ใหม่)
-upload_xlsx = st.file_uploader(
-    "หรืออัปโหลดไฟล์ xlsx ที่มีชีท sum(ตัดO2O)",
-    type=["xlsx"],
-    key="copy_xlsx"
-)
-if upload_xlsx:
-    st.session_state["last_output_bytes"] = upload_xlsx.getvalue()
-    st.session_state["last_output_name"] = upload_xlsx.name
+    if "last_output_name" in st.session_state:
+        st.info(f"📁 ไฟล์พร้อม: **{st.session_state['last_output_name']}**")
+    else:
+        st.warning("⚠️ ยังไม่มีไฟล์ — คิดค่าคอมก่อน หรืออัปโหลดด้านล่าง")
 
-copy_btn = st.button(
-    "📋 คัดลอก sum(ตัดO2O) → Com ERP",
-    type="secondary",
-    use_container_width=True,
-    disabled=("last_output_bytes" not in st.session_state),
-)
+    upload_xlsx = st.file_uploader(
+        "อัปโหลดไฟล์ xlsx ที่มีชีท sum(ตัดO2O)",
+        type=["xlsx"],
+        key="copy_xlsx"
+    )
+    if upload_xlsx:
+        st.session_state["last_output_bytes"] = upload_xlsx.getvalue()
+        st.session_state["last_output_name"] = upload_xlsx.name
 
+    copy_btn = st.button(
+        "📋 คัดลอก sum(ตัดO2O) → Com ERP",
+        type="secondary",
+        use_container_width=True,
+        disabled=("last_output_bytes" not in st.session_state),
+    )
+
+# ── ขวา: เติม H วันขาด/ลา ──
+with _col_right:
+    st.subheader("🗓️ เติม H วันขาด/ลา → สรุปCom")
+    st.caption("ถ้าไม่อัปโหลดไฟล์ InOut จะใส่ H เฉพาะวันอาทิตย์")
+
+    inout_file = st.file_uploader(
+        "ไฟล์ InOutDailyReport.xlsx (ไม่บังคับ)",
+        type=["xlsx"],
+        key="inout_file",
+        help="ถ้าไม่อัปโหลด ระบบจะใส่ H เฉพาะวันอาทิตย์เท่านั้น"
+    )
+
+    mark_h_btn = st.button(
+        "🗓️ เติม H วันอาทิตย์" + (" + วันขาด/ลา" if inout_file else ""),
+        type="secondary",
+        use_container_width=True,
+    )
+
+# ── Logic คัดลอก ──
 if copy_btn and "last_output_bytes" in st.session_state:
     import tempfile as _tmp
     try:
@@ -195,23 +216,19 @@ if copy_btn and "last_output_bytes" in st.session_state:
         def copy_progress(msg):
             status_copy.info(f"⏳ {msg}")
 
-        # เขียนไฟล์ bytes ลง temp file ชั่วคราว
         with _tmp.NamedTemporaryFile(suffix=".xlsx", delete=False) as tf:
             tf.write(st.session_state["last_output_bytes"])
             tf_path = tf.name
 
-        # Step 1: คัดลอก sum(ตัดO2O) → Com ERP
         with st.spinner("กำลังเขียน Com ERP..."):
             result = copy_sum_o2o_to_com_erp(tf_path, progress_cb=copy_progress, month=int(month), year_be=int(year_be))
         status_copy.success(result)
 
-        # Step 2: เขียนยอดรายสาขา → สรุปCom
         with st.spinner("กำลังเขียน สรุปCom..."):
             rows, dates, branch_totals = read_sum_sheet(tf_path)
             msg2 = write_summarize_com(branch_totals, dates=dates)
         st.success(msg2)
 
-        # Step 3: อัปเดตหัวชีทตามเดือน
         with st.spinner("กำลังอัปเดตหัวชีท..."):
             msg3 = update_monthly_titles(int(month), int(year_be))
         st.success(msg3)
@@ -220,25 +237,7 @@ if copy_btn and "last_output_bytes" in st.session_state:
         st.error(f"❌ เกิดข้อผิดพลาด: {e}")
         st.exception(e)
 
-
-# ===== เติม H วันขาด/ลา → สรุปCom =====
-st.divider()
-st.subheader("🗓️ เติม H วันขาด/ลา → สรุปCom")
-st.caption("อัปโหลดไฟล์ InOutDailyReport (ไม่บังคับ) — ถ้าไม่อัปโหลดจะใส่ H เฉพาะวันอาทิตย์")
-
-inout_file = st.file_uploader(
-    "ไฟล์ InOutDailyReport.xlsx (ไม่บังคับ)",
-    type=["xlsx"],
-    key="inout_file",
-    help="ถ้าไม่อัปโหลด ระบบจะใส่ H เฉพาะวันอาทิตย์เท่านั้น"
-)
-
-mark_h_btn = st.button(
-    "🗓️ เติม H วันอาทิตย์" + (" + วันขาด/ลา" if inout_file else ""),
-    type="secondary",
-    use_container_width=True,
-)
-
+# ── Logic เติม H ──
 if mark_h_btn:
     import tempfile as _tmp2
     try:
