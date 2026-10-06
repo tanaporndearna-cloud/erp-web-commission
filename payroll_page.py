@@ -503,13 +503,18 @@ def render_payroll_page(gc: gspread.Client,
         # ── Freeze ประวัติ (แสดงเสมอ ไม่ต้องอัปโหลดไฟล์ก่อน) ──────────
         st.divider()
         st.caption("🔒 Freeze ประวัติ — แปลงสูตรในคอลัมน์ประวัติ (Z เป็นต้นไป) ให้เป็นค่านิ่ง กดได้ทุกเวลา ไม่ต้องรันเงินเดือนใหม่")
-        # freeze เฉพาะชีทพนักงาน (ชื่อขึ้นต้นด้วยตัวเลขตามด้วย _) เช่น "99001_สมชาย"
-        _fz_all_pairs = [
-            (sh, sh) for sh in visible_sheets
-            if re.match(r"^\d+_", sh)
-        ]
         if st.button("🔒 Freeze ประวัติ → ค่านิ่ง (กดได้ทุกเวลา)",
                      key="btn_freeze_only", use_container_width=True):
+            # ดึง sheet list สดจาก Google Sheets ตอนกดปุ่ม (ไม่ใช้ visible_sheets ที่ cache ไว้ตอน page load)
+            # เพื่อให้นับชีทถูกต้องแม้มีการลบ/เพิ่มชีทหลัง page load
+            try:
+                _fresh_sheets = [ws.title for ws in _sheets_retry(ss.worksheets)]
+            except Exception:
+                _fresh_sheets = visible_sheets   # fallback ถ้า API ล้มเหลว
+            _fz_all_pairs = [
+                (sh, sh) for sh in _fresh_sheets
+                if re.match(r"^\d+_", sh)
+            ]
             _freeze_history_standalone(_fz_all_pairs, ss)
 
     # ══════════════════════════════════════════════════════════════
@@ -1872,19 +1877,16 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                         last_col_hdr = actual_col
                     break
 
-        # ── FIX Bug2 v20: ใช้ frozen_last_col เป็นหลัก (actual data boundary)
-        # ไม่ใช้ max() เพราะ bookmark เก่าที่ผิดพลาด (จาก run ก่อนหน้าที่มี bug)
-        # อาจทำให้ last_col_hdr > frozen_last_col → gap บวม 1 col
-        # frozen_last_col มาจาก FORMATTED_VALUE scan จริงๆ → เชื่อถือได้กว่า
-        fzlc = frozen_last_col.get(sheet_name)
-        if fzlc is not None and fzlc > COL_HIST_END:
-            # มี freeze data → ใช้เป็น boundary หลัก
-            last_col = fzlc
-            _src = f"freeze={fzlc}"
-        else:
-            # ยังไม่มี history เลย / freeze ไม่พบข้อมูล → ใช้ bookmark
-            last_col = last_col_hdr
-            _src = f"bookmark={last_col_hdr}"
+        # ── FIX v23: ใช้ bookmark แถว 1 เป็นหลักเสมอ ──────────────────────
+        # bookmark ถูกเขียนที่ paste_end-1 (จุดสิ้นสุด block จริงๆ) ทุกครั้งที่บันทึก
+        # → last_col_hdr ชี้ตำแหน่งสิ้นสุด block ที่แม่นยำ → gap = 1 col เสมอ
+        #
+        # (v20 เคยใช้ frozen_last_col override เพื่อป้องกัน bookmark เก่าที่ผิด
+        #  แต่ frozen_last_col scan data แถว 6+ ซึ่งบางสูตรอาจ evaluate นอก block
+        #  ทำให้ frozen_last_col สูงกว่าจริง 1-2 col → gap บวมเป็น 2-3 col แทน)
+        fzlc = frozen_last_col.get(sheet_name)   # ยังเก็บไว้ใช้ใน debug log
+        last_col = last_col_hdr
+        _src = f"bookmark={last_col_hdr}"
 
         paste_start = last_col + 2
         paste_end   = paste_start + width
