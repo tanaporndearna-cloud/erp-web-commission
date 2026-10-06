@@ -1263,6 +1263,7 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
             # ── format เวลาเข้า/ออก → h:mm "น." (ทุกครั้งที่รัน) ─────────
             # DATA_END - 2 เพื่อไม่ให้ format ทับแถว summary (row 39-40)
             for tc in (ti_cols + to_cols):
+                # ใส่ format h:mm "น." เฉพาะ data rows
                 all_fmt_reqs.append({"repeatCell": {
                     "range": {
                         "sheetId"         : sheet_id,
@@ -1273,6 +1274,20 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
                     },
                     "cell" : {"userEnteredFormat": {
                         "numberFormat": {"type": "TIME", "pattern": 'h:mm "น."'}
+                    }},
+                    "fields": "userEnteredFormat.numberFormat"
+                }})
+                # clear format แถว summary (row 39-40) ที่อาจค้างจาก run ก่อน
+                all_fmt_reqs.append({"repeatCell": {
+                    "range": {
+                        "sheetId"         : sheet_id,
+                        "startRowIndex"   : CFG["DATA_END"] - 2,
+                        "endRowIndex"     : CFG["DATA_END"],
+                        "startColumnIndex": tc - 1,
+                        "endColumnIndex"  : tc,
+                    },
+                    "cell" : {"userEnteredFormat": {
+                        "numberFormat": {"type": "TIME", "pattern": "h:mm"}
                     }},
                     "fields": "userEnteredFormat.numberFormat"
                 }})
