@@ -191,7 +191,7 @@ def write_summarize_com(branch_totals: dict, dates: list = None, date_start_day:
     เขียนข้อมูลลงชีท สรุปCom แบบ positional — เริ่มจาก col E เสมอ
     branch_totals: {"T2": [v1..v32], "T3": [...], ...}
     vals[0] = วันที่ 20 (col E), vals[1] = วันที่ 21 (col F), ไปเรื่อยๆ
-    ถ้า dates ส่งมาด้วย จะใส่ H อัตโนมัติสำหรับวันอาทิตย์
+    ถ้า dates ส่งมาด้วย จะเขียนวันที่ลง date header row (row 5) ทันที
     หมายเหตุ: ไม่ใช้ day-matching เพราะวันที่ 20 ปรากฏสองครั้งใน header
     (ต้นรอบ col E + ปลายรอบ col AJ) ทำให้ mapping ผิดพลาด
     """
@@ -201,38 +201,9 @@ def write_summarize_com(branch_totals: dict, dates: list = None, date_start_day:
 
     all_values = ws.get_all_values()
 
-    # หา date header row (แถวที่มีตัวเลข 1-31 มากที่สุดใน col E เป็นต้นไป)
-    def _parse_day_num(val):
-        try:
-            s = str(val).strip()
-            for sep in ('/', '-', ' ', '.'):
-                if sep in s:
-                    s = s.split(sep)[0].strip()
-                    break
-            d = int(s)
-            return d if 1 <= d <= 31 else None
-        except (ValueError, TypeError):
-            return None
-
-    date_header_row_idx = None
-    best_score = 0
-    for i, row in enumerate(all_values):
-        if len(row) < 5:
-            continue
-        days_seen = set()
-        for ci in range(4, min(4 + 35, len(row))):
-            d = _parse_day_num(row[ci])
-            if d is not None:
-                days_seen.add(d)
-        if len(days_seen) > best_score:
-            best_score = len(days_seen)
-            date_header_row_idx = i
-
-    if date_header_row_idx is None or best_score < 15:
-        raise ValueError(
-            f"หา date header row ใน สรุปCom ไม่เจอ "
-            f"(พบวันที่ไม่ซ้ำสูงสุด {best_score} วัน ต้องการ ≥15)"
-        )
+    # Date header อยู่ที่ row 5 เสมอ (0-indexed = 4) — เหมือน mark_absent_h
+    DATE_HEADER_IDX = 4  # 0-indexed
+    date_header_row_idx = DATE_HEADER_IDX
 
     date_col_start = 5  # col E (1-indexed) = วันที่ 20 เสมอ
 
