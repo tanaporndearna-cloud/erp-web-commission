@@ -274,14 +274,11 @@ def write_summarize_com(branch_totals: dict, dates: list = None, date_start_day:
         row_idx = trc_row_map[branch]
 
         # เขียนแบบ positional: vals[0] → col E, vals[1] → col F, ...
-        # วันอาทิตย์ → ใส่ "H" แทนตัวเลข
+        # แถว Commission TRC — ใส่ค่าจริงเสมอ (ไม่ใส่ H แม้วันอาทิตย์)
+        # H จะถูกใส่เฉพาะแถวรหัสพนักงานโดย mark_absent_h() เท่านั้น
         row_vals = []
         for i, v in enumerate(vals[:num_day_cols]):
-            date_str = dates[i] if dates and i < len(dates) else ""
-            if _is_sunday(date_str):
-                row_vals.append("H")
-            else:
-                row_vals.append(round(float(v or 0), 2))
+            row_vals.append(round(float(v or 0), 2))
         start_cell = gspread.utils.rowcol_to_a1(row_idx, date_col_start)
         end_cell = gspread.utils.rowcol_to_a1(row_idx, date_col_start + len(row_vals) - 1)
         batch_data.append({"range": f"{start_cell}:{end_cell}", "values": [row_vals]})
