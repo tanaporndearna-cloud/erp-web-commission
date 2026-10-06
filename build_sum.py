@@ -80,13 +80,8 @@ FONT_BOLD = Font(bold=True)
 sn = SHEET_NAME
 sn_q = f"'{sn}'" if (' ' in sn or '(' in sn or ')' in sn) else sn
 
-# ตรรกะ O2O: ชีต sum (ตัดO2O) จะใส่ 0 สำหรับพนักงานที่ไม่ใช่ของสาขานั้น
-IS_O2O = (SHEET_NAME == 'sum (ตัดO2O)')
-
-def emp_branch_num(name):
-    """ดึงเลขสาขาจากชื่อพนักงาน เช่น 'อภิชญา (เบลT6)' -> 6, ไม่มี -> None"""
-    m = re.search(r'T(\d+)', str(name))
-    return int(m.group(1)) if m else None
+# ทั้งชีต sum และ sum (ตัดO2O) ใช้สูตรเหมือนกันทุกพนักงาน (ไม่มี O2O filter)
+IS_O2O = False
 
 # 1. branch -> ordered list of distinct employees, from CAL columns A (1) and Q (17)
 branch_emps = OrderedDict()
@@ -214,28 +209,16 @@ branches = [b for b in branch_emps.keys()]
 
 row = FIRST_DATA_ROW
 for branch in branches:
-    # หาเลขสาขา เช่น 'T6' -> 6
-    branch_n = int(branch[1:]) if re.match(r'^T\d+$', branch) else None
     emps = list(branch_emps[branch].keys())
     emp_rows = []
     for emp in emps:
         ws.cell(row=row, column=1, value=branch)
         ws.cell(row=row, column=2, value=emp)
 
-        # ตรวจว่าพนักงานนี้เป็นของสาขานี้จริงหรือเปล่า (สำหรับชีต O2O)
-        # ถ้าไม่มีเลขสาขาในชื่อ → คำนวณปกติ
-        # ถ้ามีเลขสาขาในชื่อ แต่ไม่ตรงกับสาขาปัจจุบัน → 0
-        emp_n = emp_branch_num(emp)
-        is_own_branch = (emp_n is None) or (emp_n == branch_n)
-        use_formula = (not IS_O2O) or is_own_branch
-
         for c in date_cols:
             col_letter = openpyxl.utils.get_column_letter(c)
-            if use_formula:
-                val = (f"=SUMIFS(CAL!$AF:$AF,CAL!$A:$A,{sn_q}!$A{row},"
-                       f"CAL!$Q:$Q,{sn_q}!$B{row},CAL!$B:$B,{sn_q}!{col_letter}$3)")
-            else:
-                val = 0
+            val = (f"=SUMIFS(CAL!$AF:$AF,CAL!$A:$A,{sn_q}!$A{row},"
+                   f"CAL!$Q:$Q,{sn_q}!$B{row},CAL!$B:$B,{sn_q}!{col_letter}$3)")
             dc = ws.cell(row=row, column=c, value=val)
             dc.number_format = NUM_FMT
         ai_cell = ws.cell(row=row, column=AI_COL,
