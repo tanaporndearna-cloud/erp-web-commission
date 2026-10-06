@@ -95,11 +95,43 @@ def write_com_erp(rows: list, dates: list, progress_cb=None) -> str:
     return f"✅ เขียน Com ERP สำเร็จ {len(rows)} แถว"
 
 
+def _serial_to_date_str(val: str) -> str:
+    """
+    แปลง Google Sheets / Excel serial number (เช่น '46031' หรือ '46,031.00')
+    ให้เป็น string 'dd/mm/yy' — ถ้าแปลงไม่ได้คืนค่าเดิม
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    try:
+        clean = str(val).replace(",", "").strip()
+        n = float(clean)
+        if 40000 < n < 60000:          # ช่วงปี ~2009-2064
+            return (_dt(1899, 12, 30) + _td(days=int(n))).strftime("%d/%m/%y")
+    except (ValueError, TypeError):
+        pass
+    return str(val)
+
+
+def _is_sunday(date_str: str) -> bool:
+    """คืน True ถ้าวันที่นั้นเป็นวันอาทิตย์
+    รองรับ dd/mm/yy, dd/mm/yyyy และ Google Sheets serial number"""
+    from datetime import datetime
+    if not date_str:
+        return False
+    normalized = _serial_to_date_str(date_str)
+    for fmt in ("%d/%m/%y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(normalized.strip(), fmt).weekday() == 6
+        except ValueError:
+            continue
+    return False
+
+
 def write_summarize_com(branch_totals: dict, dates: list = None, date_start_day: int = 20) -> str:
     """
     เขียนข้อมูลลงชีท สรุปCom แบบ positional — เริ่มจาก col E เสมอ
     branch_totals: {"T2": [v1..v32], "T3": [...], ...}
     vals[0] = วันที่ 20 (col E), vals[1] = วันที่ 21 (col F), ไปเรื่อยๆ
+    ถ้า dates ส่งมาด้วย จะใส่ H อัตโนมัติสำหรับวันอาทิตย์
     หมายเหตุ: ไม่ใช้ day-matching เพราะวันที่ 20 ปรากฏสองครั้งใน header
     (ต้นรอบ col E + ปลายรอบ col AJ) ทำให้ mapping ผิดพลาด
     """
@@ -146,6 +178,17 @@ def write_summarize_com(branch_totals: dict, dates: list = None, date_start_day:
     num_day_cols = 32   # col E ถึง col AJ
     sheet_last_date_col = date_col_start + num_day_cols - 1  # col AJ
 
+    # ── เขียนวันที่ลง date header row (Row 6, col E-AJ) ──
+    if dates:
+        date_header_1idx = date_header_row_idx + 1  # 1-indexed
+        date_vals = [str(d) if d else "" for d in dates[:num_day_cols]]
+        # pad ให้ครบ 32 ช่อง
+        while len(date_vals) < num_day_cols:
+            date_vals.append("")
+        start_cell = gspread.utils.rowcol_to_a1(date_header_1idx, date_col_start)
+        end_cell   = gspread.utils.rowcol_to_a1(date_header_1idx, date_col_start + num_day_cols - 1)
+        ws.update(f"{start_cell}:{end_cell}", [date_vals], value_input_option="USER_ENTERED")
+
     # หา Commission TRC rows
     trc_row_map = {}
     for i in range(date_header_row_idx + 1, len(all_values)):
@@ -166,7 +209,14 @@ def write_summarize_com(branch_totals: dict, dates: list = None, date_start_day:
         row_idx = trc_row_map[branch]
 
         # เขียนแบบ positional: vals[0] → col E, vals[1] → col F, ...
-        row_vals = [round(float(v or 0), 2) for v in vals[:num_day_cols]]
+        # วันอาทิตย์ → ใส่ "H" แทนตัวเลข
+        row_vals = []
+        for i, v in enumerate(vals[:num_day_cols]):
+            date_str = dates[i] if dates and i < len(dates) else ""
+            if _is_sunday(date_str):
+                row_vals.append("H")
+            else:
+                row_vals.append(round(float(v or 0), 2))
         start_cell = gspread.utils.rowcol_to_a1(row_idx, date_col_start)
         end_cell = gspread.utils.rowcol_to_a1(row_idx, date_col_start + len(row_vals) - 1)
         batch_data.append({"range": f"{start_cell}:{end_cell}", "values": [row_vals]})
@@ -175,14 +225,41 @@ def write_summarize_com(branch_totals: dict, dates: list = None, date_start_day:
 
     ws.batch_update(batch_data)
 
-    # ตั้ง number format #,##0.00 ให้ช่วงวันที่ทั้งหมด
+    # ตั้ง number format #,##0.00 เฉพาะช่องที่ไม่ใช่วันอาทิตย์
+    sunday_cols = set()
+    if dates:
+        for i, d in enumerate(dates[:num_day_cols]):
+            if _is_sunday(d):
+                sunday_cols.add(date_col_start + i)  # 1-indexed col
+
+    fmt_requests = []
     for branch in branch_totals:
         if branch not in trc_row_map:
             continue
         row_idx = trc_row_map[branch]
-        start_cell = gspread.utils.rowcol_to_a1(row_idx, date_col_start)
-        end_cell = gspread.utils.rowcol_to_a1(row_idx, sheet_last_date_col)
-        ws.format(f"{start_cell}:{end_cell}", {"numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}})
+        # format เป็น range ย่อยๆ ข้ามคอลัมน์ที่เป็น Sunday
+        range_start = None
+        for ci in range(date_col_start, date_col_start + num_day_cols):
+            if ci in sunday_cols:
+                # ปิด range ที่เปิดอยู่
+                if range_start is not None:
+                    fmt_requests.append({
+                        "range": f"{gspread.utils.rowcol_to_a1(row_idx, range_start)}:{gspread.utils.rowcol_to_a1(row_idx, ci - 1)}",
+                        "format": {"numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
+                    })
+                    range_start = None
+            else:
+                if range_start is None:
+                    range_start = ci
+        # ปิด range สุดท้าย
+        if range_start is not None:
+            fmt_requests.append({
+                "range": f"{gspread.utils.rowcol_to_a1(row_idx, range_start)}:{gspread.utils.rowcol_to_a1(row_idx, date_col_start + num_day_cols - 1)}",
+                "format": {"numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
+            })
+
+    if fmt_requests:
+        ws.batch_format(fmt_requests)
 
     return f"✅ เขียน สรุปCom สำเร็จ {written}/{len(trc_row_map)} สาขา"
 
@@ -286,7 +363,7 @@ def copy_sum_o2o_to_com_erp(xlsx_path: str, progress_cb=None, month: int = None,
                 processed.append("")
             elif hasattr(val, 'strftime'):
                 processed.append(val.strftime("%d/%m/%y"))
-            elif isinstance(val, (int, float)) and cell.is_date:
+            elif isinstance(val, (int, float)) and (cell.is_date or 40000 < val < 60000):
                 processed.append(_excel_serial_to_str(val))
             else:
                 processed.append(val)
@@ -435,6 +512,76 @@ def clear_and_copy_from_sum_o2o(progress_cb=None) -> str:
     )
 
     return f"✅ คัดลอก {total_rows} แถวจาก sum(ตัดO2O) → Com ERP สำเร็จ"
+
+
+def copy_com_erp_to_summarize(progress_cb=None) -> str:
+    """
+    อ่านข้อมูลจากชีท Com ERP ใน Google Sheet
+    แล้วเขียนยอดรวมแต่ละสาขาลงชีท สรุปCom
+
+    โครงสร้าง Com ERP:
+    - header row: col A = "สาขา", col B = ชื่อ, col C-AH = วันที่ (32 วัน)
+    - แถว "รวม": col A = branch (เช่น "T2"), col B = "รวม", col C-AH = ยอดรวมรายวัน
+    """
+    gc = get_client()
+    sh = gc.open_by_key(SHEET_ID)
+
+    # ---- อ่าน Com ERP ----
+    if progress_cb:
+        progress_cb("อ่านข้อมูลจากชีท Com ERP...")
+
+    ws_com = sh.worksheet(SHEET_COM_ERP)
+    all_values = ws_com.get_all_values()
+
+    if not all_values:
+        raise ValueError("ชีท Com ERP ว่างเปล่า")
+
+    # หา header row (col A = "สาขา")
+    header_idx = None
+    for i, row in enumerate(all_values):
+        if row and row[0] == "สาขา":
+            header_idx = i
+            break
+
+    if header_idx is None:
+        raise ValueError("หา header row (สาขา) ใน Com ERP ไม่เจอ")
+
+    # อ่านวันที่จาก header (col C-AH = index 2-33)
+    # แปลง serial number (เช่น "46,031.00") → "dd/mm/yy" string
+    header = all_values[header_idx]
+    dates = []
+    for j in range(2, 34):
+        v = header[j] if j < len(header) else ""
+        dates.append(_serial_to_date_str(str(v)) if v else "")
+
+    # หาแถว "รวม" ของแต่ละสาขา
+    branch_totals = {}
+    for i in range(header_idx + 1, len(all_values)):
+        row = all_values[i]
+        if len(row) < 2:
+            continue
+        branch = str(row[0]).strip()
+        name = str(row[1]).strip()
+        if name == "รวม" and branch:
+            daily = []
+            for j in range(2, 34):
+                v = row[j] if j < len(row) else ""
+                try:
+                    daily.append(float(str(v).replace(",", "")) if v != "" else 0.0)
+                except (ValueError, TypeError):
+                    daily.append(0.0)
+            branch_totals[branch] = daily
+
+    if not branch_totals:
+        raise ValueError("หาแถว 'รวม' ในชีท Com ERP ไม่เจอ (ต้องมี col B = 'รวม')")
+
+    if progress_cb:
+        progress_cb(f"พบข้อมูล {len(branch_totals)} สาขา — กำลังเขียนลง สรุปCom...")
+
+    # เขียนลง สรุปCom
+    result = write_summarize_com(branch_totals, dates)
+
+    return f"✅ คัดลอก Com ERP → สรุปCom สำเร็จ ({len(branch_totals)} สาขา)\n{result}"
 
 
 def read_sum_sheet(xlsx_path: str) -> tuple:
