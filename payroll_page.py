@@ -2143,35 +2143,9 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                     except Exception:
                         pass
 
-    # ── Phase 4: Freeze block ที่เพิ่งเขียน (Bug1 fix) ─────────────────────────
-    # Phase 1b.5 freeze แค่ history เก่า (ก่อน paste) แต่ block ที่เพิ่งเขียนใน Phase 1e/3
-    # ยังเป็น formula อยู่ → freeze อีกครั้งหลัง write เสร็จเพื่อแปลงเป็น static value ทันที
-    # ป้องกันกรณีที่ App Script ลบข้อมูลแล้วรันใหม่ (block ใหม่จะถูก freeze ก่อนลบ)
-    if paste_info:
-        _upd(0.96, f"⏳ กำลัง freeze block ใหม่ ({len(paste_info)} Sheet)...")
-        # หา min paste_start เพื่อ cover ทุก sheet ในครั้งเดียว
-        # (แต่ละ sheet อาจมี paste_start ต่างกัน — ใช้ min เพื่อให้ range ครอบคลุมทุกชีต)
-        min_ps = min(ps for ps, pe, _ in paste_info.values())
-        _fz2_pairs = [
-            (sname, ws_dict[sname].title)
-            for sname in valid_names
-            if sname in paste_info and sname in ws_dict
-        ]
-        if _fz2_pairs:
-            _lc2 = _freeze_formulas_to_values(
-                ss,
-                _fz2_pairs,
-                col_start=min_ps,
-                num_rows=NUM_ROWS,
-            )
-            _fz2_failed_r = _lc2.pop("__failed_reads__",  [])
-            _fz2_failed_w = _lc2.pop("__failed_writes__", [])
-            if _fz2_failed_r:
-                st.warning(f"⚠️ Freeze block ใหม่ อ่านไม่ได้ {len(_fz2_failed_r)} Sheet: "
-                           + ", ".join(str(x) for x in _fz2_failed_r))
-            if _fz2_failed_w:
-                st.warning(f"⚠️ Freeze block ใหม่ เขียนค่านิ่งไม่สำเร็จ {len(_fz2_failed_w)} รายการ:\n"
-                           + "\n".join(f"• {x}" for x in _fz2_failed_w))
+    # v22: ไม่ auto-freeze block ใหม่ — ปล่อยให้เป็นสูตรไว้ก่อน
+    # การ freeze จะเกิดขึ้นใน Phase 1b.5 ของการรัน ครั้งถัดไป (เดือนหน้า)
+    # หรือกด "บันทึกค่านิ่ง" ด้วยตนเองเมื่อพร้อม
 
     _upd(0.99, "⏳ เกือบเสร็จแล้วค่ะ...")
     return results
