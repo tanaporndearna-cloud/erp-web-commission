@@ -1260,6 +1260,22 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
                             "fields": "userEnteredFormat.backgroundColor"
                         }})
 
+            # ── format เวลาเข้า/ออก → h:mm "น." (ทุกครั้งที่รัน) ─────────
+            for tc in (ti_cols + to_cols):
+                all_fmt_reqs.append({"repeatCell": {
+                    "range": {
+                        "sheetId"         : sheet_id,
+                        "startRowIndex"   : CFG["DATA_START"] - 1,
+                        "endRowIndex"     : CFG["DATA_END"],
+                        "startColumnIndex": tc - 1,
+                        "endColumnIndex"  : tc,
+                    },
+                    "cell" : {"userEnteredFormat": {
+                        "numberFormat": {"type": "TIME", "pattern": 'h:mm "น."'}
+                    }},
+                    "fields": "userEnteredFormat.numberFormat"
+                }})
+
             success_cnt += 1
 
         progress_bar.progress(base_prog + prog_span * 0.65)
