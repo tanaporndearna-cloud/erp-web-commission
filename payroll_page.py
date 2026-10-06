@@ -1834,13 +1834,20 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         ws      = ws_dict[sheet_name]
         rows    = header_data.get(sheet_name, [])
 
-        # หา rightmost non-empty cell ในแถว 1-5 (สำหรับ history ที่มี bookmark)
+        # หา rightmost non-empty cell ในแถว 1-5 เฉพาะส่วน history (col >= COL_HIST_START)
+        # จำกัดเริ่มจาก COL_HIST_START เพื่อไม่ให้ template header ของ payroll (ที่อาจยืด
+        # เกิน col Y ในบางชีต) inflate last_col_hdr จนทำให้ gap ระหว่าง block เกิน 1 ช่อง
         last_col_hdr = COL_HIST_END
+        hist_start_idx = COL_HIST_START - 1   # 0-based index ของ col M
         for row in rows:
-            for ci in range(len(row) - 1, -1, -1):
-                if str(row[ci]).strip():
-                    if ci + 1 > last_col_hdr:
-                        last_col_hdr = ci + 1
+            if len(row) <= hist_start_idx:
+                continue   # แถวนี้สั้นกว่า col M — ข้ามได้เลย
+            sub = row[hist_start_idx:]   # ตัดส่วน template (A-L) ออก
+            for ci_sub in range(len(sub) - 1, -1, -1):
+                if str(sub[ci_sub]).strip():
+                    actual_col = hist_start_idx + ci_sub + 1   # 1-based
+                    if actual_col > last_col_hdr:
+                        last_col_hdr = actual_col
                     break
 
         # ใช้ค่าที่ Phase 1b.5 detect ได้จากการ scan ทุกแถว (แม้แถว 1-5 ว่าง)
