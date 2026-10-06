@@ -104,8 +104,9 @@ def _freeze_formulas_to_values(ss, sheet_pairs, col_start: int, num_rows: int, c
         for _, wt in sheet_pairs
     ]
 
-    last_cols: dict[str, int] = {}
-    writes:    list[dict]     = []
+    last_cols:    dict[str, int]        = {}
+    sheet_writes: dict[str, list[dict]] = {}   # ws_title → write ops (แยกต่อ sheet)
+    failed_reads: list[str]             = []
 
     for fi in range(0, len(fz_ranges), chunk):
         cr = fz_ranges[fi:fi + chunk]
@@ -156,22 +157,29 @@ def _freeze_formulas_to_values(ss, sheet_pairs, col_start: int, num_rows: int, c
 
                     cl = col_letter(col_start + ci)
                     for seg_ri, seg_vs in segs:
-                        writes.append({
+                        sheet_writes.setdefault(ws_title, []).append({
                             "range" : (f"'{_esc(ws_title)}'!"
                                        f"{cl}{seg_ri + 1}:{cl}{seg_ri + len(seg_vs)}"),
                             "values": [[v] for v in seg_vs],
                         })
         except Exception:
-            pass
+            failed_reads.extend(sn for sn, _ in cp)
 
-    for fi in range(0, len(writes), chunk):
-        try:
-            _sheets_retry(ss.values_batch_update, {
-                "valueInputOption": "RAW",
-                "data"            : writes[fi:fi + chunk],
-            })
-        except Exception:
-            pass
+    # ── Write แยกต่อ sheet (sheet ใด fail ก็ไม่กระทบ sheet อื่น) ──
+    failed_writes: list[str] = []
+    for ws_title, sw in sheet_writes.items():
+        for fi in range(0, len(sw), chunk):
+            try:
+                _sheets_retry(ss.values_batch_update, {
+                    "valueInputOption": "RAW",
+                    "data"            : sw[fi:fi + chunk],
+                })
+            except Exception as e:
+                failed_writes.append(f"{ws_title}: {e}")
+
+    # แนบ failed info ไว้ใน last_cols เพื่อให้ caller ดูได้ (ผ่าน attribute พิเศษ)
+    last_cols["__failed_reads__"]  = failed_reads   # type: ignore[assignment]
+    last_cols["__failed_writes__"] = failed_writes  # type: ignore[assignment]
 
     return last_cols
 
@@ -884,10 +892,21 @@ def _freeze_history_standalone(pairs, ss):
     progress_bar.progress(1.0)
     status_text.empty()
     progress_bar.empty()
+
+    # แยก error info ออกจาก last_cols ก่อนนับ
+    failed_reads  = result.pop("__failed_reads__",  [])
+    failed_writes = result.pop("__failed_writes__", [])
+
     if result:
         st.success(f"✅ Freeze เสร็จแล้วค่ะ — ครอบคลุม {len(result)} Sheet รูปใน cell ปลอดภัย")
     else:
         st.info("ℹ️ ไม่พบสูตรในประวัติ (อาจ freeze ไปแล้ว หรือยังไม่มีประวัติ)")
+
+    if failed_reads:
+        st.warning(f"⚠️ อ่านข้อมูลไม่ได้ {len(failed_reads)} Sheet: {', '.join(str(x) for x in failed_reads)}")
+    if failed_writes:
+        st.error(f"❌ เขียนค่านิ่งไม่สำเร็จ {len(failed_writes)} รายการ:\n" +
+                 "\n".join(f"• {x}" for x in failed_writes))
 
 
 def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None):
@@ -1801,6 +1820,8 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         col_start=COL_HIST_END + 1,
         num_rows=NUM_ROWS,
     )
+    _lc.pop("__failed_reads__",  None)
+    _lc.pop("__failed_writes__", None)
     frozen_last_col.update(_lc)
 
     # ── Phase 1c: คำนวณ paste position + resize ถ้าจำเป็น ────────────
