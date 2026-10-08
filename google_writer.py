@@ -679,6 +679,8 @@ def mark_absent_h(absent_days: dict, progress_cb=None) -> str:
 
     # ---- สแกนแถวพนักงาน ----
     updates: list[dict] = []   # [{range, values}]
+    sunday_addrs: list[str] = []   # H สีแดง (วันอาทิตย์)
+    absent_addrs: list[str] = []   # H สีน้ำเงิน (ขาด/ลา)
     marked_count = 0
 
     for row_idx, row in enumerate(all_values):
@@ -709,12 +711,17 @@ def mark_absent_h(absent_days: dict, progress_cb=None) -> str:
             if cur != "":
                 continue
 
-            should_h = _is_sunday(date_str) or absent_days.get((emp_id, date_str), False)
-            if should_h:
-                # 1-indexed สำหรับ A1 notation
+            is_sun = _is_sunday(date_str)
+            is_absent = absent_days.get((emp_id, date_str), False)
+
+            if is_sun or is_absent:
                 cell_addr = gspread.utils.rowcol_to_a1(row_idx + 1, ci + 1)
                 updates.append({"range": cell_addr, "values": [["H"]]})
                 marked_count += 1
+                if is_sun:
+                    sunday_addrs.append(cell_addr)   # สีแดง
+                else:
+                    absent_addrs.append(cell_addr)   # สีน้ำเงิน
 
     if not updates:
         return "✅ ไม่มี cell ที่ต้องเติม H (อาจเติมไปแล้วหรือไม่มีวันขาด)"
@@ -724,19 +731,25 @@ def mark_absent_h(absent_days: dict, progress_cb=None) -> str:
 
     # batch update ครั้งละ 500 cells
     BATCH = 500
-    cell_addresses = [u["range"] for u in updates]
     for i in range(0, len(updates), BATCH):
         ws.batch_update(updates[i:i + BATCH], value_input_option="USER_ENTERED")
 
-    # จัด H ให้อยู่ตรงกลาง
-    fmt_updates = [
-        {"range": addr, "format": {"horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}}
-        for addr in cell_addresses
-    ]
+    # format: center + สีตามประเภท
+    RED  = {"red": 1.0, "green": 0.0, "blue": 0.0}   # วันอาทิตย์
+    BLUE = {"red": 0.0, "green": 0.0, "blue": 1.0}   # ขาด/ลา
+
+    BASE_FMT = {"horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}
+
+    fmt_updates = []
+    for addr in sunday_addrs:
+        fmt_updates.append({"range": addr, "format": {**BASE_FMT, "textFormat": {"foregroundColor": RED}}})
+    for addr in absent_addrs:
+        fmt_updates.append({"range": addr, "format": {**BASE_FMT, "textFormat": {"foregroundColor": BLUE}}})
+
     for i in range(0, len(fmt_updates), BATCH):
         ws.batch_format(fmt_updates[i:i + BATCH])
 
-    return f"✅ เติม H สำเร็จ {marked_count} cell (วันอาทิตย์ + ขาด/ลา)"
+    return f"✅ เติม H สำเร็จ {marked_count} cell (🔴 อาทิตย์ {len(sunday_addrs)} | 🔵 ขาด/ลา {len(absent_addrs)})"
 
 
 def read_sum_sheet(xlsx_path: str) -> tuple:
