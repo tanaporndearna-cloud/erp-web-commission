@@ -795,11 +795,17 @@ def read_sum_sheet(xlsx_path: str) -> tuple:
         daily = []
         for j in range(2, 34):
             v = row[j] if j < len(row) else None
-            daily.append(float(v) if v is not None else 0.0)
+            try:
+                daily.append(float(v) if v is not None else 0.0)
+            except (ValueError, TypeError):
+                daily.append(0.0)  # กรณี #NAME?, #REF!, #N/A ฯลฯ
 
         # summary cols (index 35=คอมรายคน, 36=คอมรวม, 37=ยอดขาย, 38=%Com)
         def _f(idx):
-            return float(row[idx]) if idx < len(row) and row[idx] is not None else 0.0
+            try:
+                return float(row[idx]) if idx < len(row) and row[idx] is not None else 0.0
+            except (ValueError, TypeError):
+                return 0.0  # กรณี #NAME?, #REF!, #N/A ฯลฯ
 
         com_pp = _f(35)
         com_tot = _f(36)
