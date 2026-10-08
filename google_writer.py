@@ -482,6 +482,12 @@ def copy_sum_o2o_to_com_erp(xlsx_path: str, progress_cb=None, month: int = None,
         {"numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
     )
 
+    # ===== แถวที่ 3 = วันที่ → ใส่ DATE format ทับ (เพราะ USER_ENTERED แปลง "13/09/26" เป็น serial แล้ว #,##0.00 ทำให้โชว์เป็นตัวเลข) =====
+    if progress_cb:
+        progress_cb("ใส่ format วันที่แถว 3...")
+    date_row_range = f"A3:{gspread.utils.rowcol_to_a1(3, max_cols)}"
+    ws_dst.format(date_row_range, {"numberFormat": {"type": "DATE", "pattern": "d/m/yy"}})
+
     # ล้าง B1 ที่อาจมีชื่อเดือนเก่าจาก template (เช่น ตุลาคม ทั้งๆ ที่เดือนจริงคือ กันยายน)
     if progress_cb:
         progress_cb("ล้าง B1 ที่มีชื่อเดือนเก่า...")
