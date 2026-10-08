@@ -724,8 +724,17 @@ def mark_absent_h(absent_days: dict, progress_cb=None) -> str:
 
     # batch update ครั้งละ 500 cells
     BATCH = 500
+    cell_addresses = [u["range"] for u in updates]
     for i in range(0, len(updates), BATCH):
         ws.batch_update(updates[i:i + BATCH], value_input_option="USER_ENTERED")
+
+    # จัด H ให้อยู่ตรงกลาง
+    fmt_updates = [
+        {"range": addr, "format": {"horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}}
+        for addr in cell_addresses
+    ]
+    for i in range(0, len(fmt_updates), BATCH):
+        ws.batch_format(fmt_updates[i:i + BATCH])
 
     return f"✅ เติม H สำเร็จ {marked_count} cell (วันอาทิตย์ + ขาด/ลา)"
 
