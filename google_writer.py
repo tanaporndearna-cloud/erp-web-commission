@@ -379,9 +379,9 @@ def copy_sum_o2o_to_com_erp(xlsx_path: str, progress_cb=None, month: int = None,
     from datetime import datetime as _dt, timedelta as _td
 
     def _excel_serial_to_str(val):
-        """แปลง Excel date serial → dd/mm/yy"""
+        """แปลง Excel date serial → YYYY-MM-DD (ISO) ให้ Google Sheets อ่านถูก locale"""
         try:
-            return (_dt(1899, 12, 30) + _td(days=int(val))).strftime("%d/%m/%y")
+            return (_dt(1899, 12, 30) + _td(days=int(val))).strftime("%Y-%m-%d")
         except Exception:
             return val
 
@@ -395,7 +395,7 @@ def copy_sum_o2o_to_com_erp(xlsx_path: str, progress_cb=None, month: int = None,
             if val is None:
                 processed.append("")
             elif hasattr(val, 'strftime'):
-                processed.append(val.strftime("%d/%m/%y"))
+                processed.append(val.strftime("%Y-%m-%d"))  # ISO format — Google Sheets อ่านถูกทุก locale
             elif isinstance(val, (int, float)) and (cell.is_date or 40000 < val < 60000):
                 processed.append(_excel_serial_to_str(val))
             else:
