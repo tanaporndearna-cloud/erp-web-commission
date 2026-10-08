@@ -90,15 +90,12 @@ def run_pipeline(
 
         if not pps_path and has_pps and not has_pps05:
             base_pps = os.path.join(tmp, "base_pps.xlsx")
-            step("สร้างชีท pps05 จาก ERP...", _run,
+            step("สร้างชีท PPS จาก ERP...", _run,
                  [python, str(SCRIPTS_DIR / "build_pps_from_erp.py"),
                   current, base_pps], log)
-            wb3 = ox.load_workbook(base_pps)
-            if "PPS" in wb3.sheetnames:
-                del wb3["PPS"]
-            clean_path = os.path.join(tmp, "base_pps_clean.xlsx")
-            wb3.save(clean_path)
-            current = clean_path
+            # build_pps_from_erp.py จัดการ PPS sheet ครบแล้ว (ลบดิบ + สร้างใหม่)
+            # ไม่ต้องลบ PPS อีกรอบ
+            current = base_pps
 
         with_cal = os.path.join(tmp, "with_cal.xlsx")
         step("คำนวณ CAL (ค่าคอม)...", _run,
