@@ -493,6 +493,12 @@ def copy_sum_o2o_to_com_erp(xlsx_path: str, progress_cb=None, month: int = None,
         progress_cb("ล้าง B1 ที่มีชื่อเดือนเก่า...")
     ws_dst.update("B1", [[""]], value_input_option="USER_ENTERED")
 
+    # ===== Column AL = % Com → ใส่ PERCENT format =====
+    if progress_cb:
+        progress_cb("ใส่ format % Col AL...")
+    al_col_range = f"AL1:AL{total_rows}"
+    ws_dst.format(al_col_range, {"numberFormat": {"type": "PERCENT", "pattern": "0.00%"}})
+
     return f"✅ คัดลอก {total_rows} แถวจาก sum(ตัดO2O) → Com ERP สำเร็จ"
 
 
