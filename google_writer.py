@@ -316,18 +316,21 @@ MONTHLY_TITLE_SHEETS = [
 
 def update_monthly_titles(month: int, year_be: int) -> str:
     """
-    อัปเดตหัวชีท A1 ของ 4 ชีทตามเดือน/ปีที่คิดค่าคอม
-    รูปแบบ: 'สรุปคอมมิชชั่น เดือน กันยายน 2569'
+    อัปเดตหัวชีท A1 ของ 5 ชีท โดยอ่านค่าจาก A1 ของชีท Com ERP
     ค้นหาชีทแบบ case-insensitive
     """
-    month_name = THAI_MONTHS[month] if 1 <= month <= 12 else f"เดือน{month}"
-    title = f"สรุปคอมมิชชั่น เดือน {month_name} {year_be}"
-
     gc = get_client()
     sh = gc.open_by_key(SHEET_ID)
 
     all_worksheets = sh.worksheets()
     all_sheet_names = {ws.title.lower(): ws for ws in all_worksheets}
+
+    # อ่าน A1 จากชีท Com ERP
+    ws_com_erp = all_sheet_names.get(SHEET_COM_ERP.lower())
+    if ws_com_erp is None:
+        return f"⚠️ หาชีท '{SHEET_COM_ERP}' ไม่เจอ"
+    title = ws_com_erp.acell("A1").value or ""
+
     updated = []
 
     for sheet_name in MONTHLY_TITLE_SHEETS:
