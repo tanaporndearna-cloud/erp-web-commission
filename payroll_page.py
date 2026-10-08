@@ -97,10 +97,40 @@ def _freeze_formulas_to_values(ss, sheet_pairs, col_start: int, num_rows: int, c
     def _esc(sh: str) -> str:
         return sh.replace("'", "''")
 
-    COL_END_MAX = col_start + 574   # รองรับประวัติ ~575 คอลัมน์ (~41 เดือน × 14 col)
+    COL_END_HARD = col_start + 574   # hard cap (~41 เดือน × 14 col)
+
+    # ── Pre-scan: อ่าน row 1 เพื่อหา bookmark column จริง (เร็ว) ──────────
+    # ป้องกัน freeze อ่าน range ใหญ่โดยไม่จำเป็น
+    prescan_ranges = [
+        f"'{_esc(wt)}'!{col_letter(col_start)}1:{col_letter(COL_END_HARD)}1"
+        for _, wt in sheet_pairs
+    ]
+    sheet_col_end: dict[str, int] = {}   # ws_title → actual last col to scan
+    for fi in range(0, len(prescan_ranges), chunk):
+        cp = sheet_pairs[fi:fi + chunk]
+        cr = prescan_ranges[fi:fi + chunk]
+        try:
+            rp = _sheets_retry(ss.values_batch_get, cr,
+                               params={"valueRenderOption": "FORMATTED_VALUE"})
+            for (sname, wt), vr in zip(cp, rp.get("valueRanges", [])):
+                row1 = vr.get("values", [[]])[0] if vr.get("values") else []
+                # หา rightmost non-empty cell ใน row 1
+                last_nonempty = 0
+                for ci, v in enumerate(row1):
+                    if v not in ("", None):
+                        last_nonempty = ci + 1   # 1-indexed relative to col_start
+                if last_nonempty:
+                    # +13 buffer (1 history block) เพื่อไม่ตัดสั้นเกินไป
+                    sheet_col_end[wt] = min(col_start + last_nonempty + 12, COL_END_HARD)
+                else:
+                    sheet_col_end[wt] = col_start + 12   # ยังไม่มีประวัติ — อ่านแค่ 1 block
+        except Exception:
+            # prescan ล้มเหลว → fallback ใช้ hard cap
+            for _, wt in sheet_pairs[fi:fi + chunk]:
+                sheet_col_end[wt] = COL_END_HARD
 
     fz_ranges = [
-        f"'{_esc(wt)}'!{col_letter(col_start)}1:{col_letter(COL_END_MAX)}{num_rows}"
+        f"'{_esc(wt)}'!{col_letter(col_start)}1:{col_letter(sheet_col_end.get(wt, COL_END_HARD))}{num_rows}"
         for _, wt in sheet_pairs
     ]
 
@@ -503,13 +533,18 @@ def render_payroll_page(gc: gspread.Client,
         # ── Freeze ประวัติ (แสดงเสมอ ไม่ต้องอัปโหลดไฟล์ก่อน) ──────────
         st.divider()
         st.caption("🔒 Freeze ประวัติ — แปลงสูตรในคอลัมน์ประวัติ (Z เป็นต้นไป) ให้เป็นค่านิ่ง กดได้ทุกเวลา ไม่ต้องรันเงินเดือนใหม่")
-        # freeze เฉพาะชีทพนักงาน (ชื่อขึ้นต้นด้วยตัวเลขตามด้วย _) เช่น "99001_สมชาย"
-        _fz_all_pairs = [
-            (sh, sh) for sh in visible_sheets
-            if re.match(r"^\d+_", sh)
-        ]
         if st.button("🔒 Freeze ประวัติ → ค่านิ่ง (กดได้ทุกเวลา)",
                      key="btn_freeze_only", use_container_width=True):
+            # ดึง sheet list สดจาก Google Sheets ตอนกดปุ่ม (ไม่ใช้ visible_sheets ที่ cache ไว้ตอน page load)
+            # เพื่อให้นับชีทถูกต้องแม้มีการลบ/เพิ่มชีทหลัง page load
+            try:
+                _fresh_sheets = [ws.title for ws in _sheets_retry(ss.worksheets)]
+            except Exception:
+                _fresh_sheets = visible_sheets   # fallback ถ้า API ล้มเหลว
+            _fz_all_pairs = [
+                (sh, sh) for sh in _fresh_sheets
+                if re.match(r"^\d+_", sh)
+            ]
             _freeze_history_standalone(_fz_all_pairs, ss)
 
     # ══════════════════════════════════════════════════════════════
@@ -1255,6 +1290,38 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
                             "fields": "userEnteredFormat.backgroundColor"
                         }})
 
+            # ── format เวลาเข้า/ออก → h:mm "น." (ทุกครั้งที่รัน) ─────────
+            # DATA_END - 2 เพื่อไม่ให้ format ทับแถว summary (row 39-40)
+            for tc in (ti_cols + to_cols):
+                # ใส่ format h:mm "น." เฉพาะ data rows
+                all_fmt_reqs.append({"repeatCell": {
+                    "range": {
+                        "sheetId"         : sheet_id,
+                        "startRowIndex"   : CFG["DATA_START"] - 1,
+                        "endRowIndex"     : CFG["DATA_END"] - 2,
+                        "startColumnIndex": tc - 1,
+                        "endColumnIndex"  : tc,
+                    },
+                    "cell" : {"userEnteredFormat": {
+                        "numberFormat": {"type": "TIME", "pattern": 'h:mm "น."'}
+                    }},
+                    "fields": "userEnteredFormat.numberFormat"
+                }})
+                # clear format แถว summary (row 39-40) → General (ไม่ใช่ time format)
+                all_fmt_reqs.append({"repeatCell": {
+                    "range": {
+                        "sheetId"         : sheet_id,
+                        "startRowIndex"   : CFG["DATA_END"] - 2,
+                        "endRowIndex"     : CFG["DATA_END"],
+                        "startColumnIndex": tc - 1,
+                        "endColumnIndex"  : tc,
+                    },
+                    "cell" : {"userEnteredFormat": {
+                        "numberFormat": {"type": "NUMBER", "pattern": "0.00"}
+                    }},
+                    "fields": "userEnteredFormat.numberFormat"
+                }})
+
             success_cnt += 1
 
         progress_bar.progress(base_prog + prog_span * 0.65)
@@ -1873,19 +1940,16 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                         last_col_hdr = actual_col
                     break
 
-        # ── FIX Bug2 v20: ใช้ frozen_last_col เป็นหลัก (actual data boundary)
-        # ไม่ใช้ max() เพราะ bookmark เก่าที่ผิดพลาด (จาก run ก่อนหน้าที่มี bug)
-        # อาจทำให้ last_col_hdr > frozen_last_col → gap บวม 1 col
-        # frozen_last_col มาจาก FORMATTED_VALUE scan จริงๆ → เชื่อถือได้กว่า
-        fzlc = frozen_last_col.get(sheet_name)
-        if fzlc is not None and fzlc > COL_HIST_END:
-            # มี freeze data → ใช้เป็น boundary หลัก
-            last_col = fzlc
-            _src = f"freeze={fzlc}"
-        else:
-            # ยังไม่มี history เลย / freeze ไม่พบข้อมูล → ใช้ bookmark
-            last_col = last_col_hdr
-            _src = f"bookmark={last_col_hdr}"
+        # ── FIX v23: ใช้ bookmark แถว 1 เป็นหลักเสมอ ──────────────────────
+        # bookmark ถูกเขียนที่ paste_end-1 (จุดสิ้นสุด block จริงๆ) ทุกครั้งที่บันทึก
+        # → last_col_hdr ชี้ตำแหน่งสิ้นสุด block ที่แม่นยำ → gap = 1 col เสมอ
+        #
+        # (v20 เคยใช้ frozen_last_col override เพื่อป้องกัน bookmark เก่าที่ผิด
+        #  แต่ frozen_last_col scan data แถว 6+ ซึ่งบางสูตรอาจ evaluate นอก block
+        #  ทำให้ frozen_last_col สูงกว่าจริง 1-2 col → gap บวมเป็น 2-3 col แทน)
+        fzlc = frozen_last_col.get(sheet_name)   # ยังเก็บไว้ใช้ใน debug log
+        last_col = last_col_hdr
+        _src = f"bookmark={last_col_hdr}"
 
         paste_start = last_col + 2
         paste_end   = paste_start + width
@@ -2144,62 +2208,9 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                     except Exception:
                         pass
 
-    # ── Phase 4: Freeze block ที่เพิ่งเขียน (Bug1 fix) ─────────────────────────
-    # Phase 1b.5 freeze แค่ history เก่า (ก่อน paste) แต่ block ที่เพิ่งเขียนใน Phase 1e/3
-    # ยังเป็น formula อยู่ → freeze อีกครั้งหลัง write เสร็จเพื่อแปลงเป็น static value ทันที
-    # ป้องกันกรณีที่ App Script ลบข้อมูลแล้วรันใหม่ (block ใหม่จะถูก freeze ก่อนลบ)
-    if paste_info:
-        _upd(0.96, f"⏳ กำลัง freeze block ใหม่ ({len(paste_info)} Sheet)...")
-        # หา min paste_start เพื่อ cover ทุก sheet ในครั้งเดียว
-        # (แต่ละ sheet อาจมี paste_start ต่างกัน — ใช้ min เพื่อให้ range ครอบคลุมทุกชีต)
-        min_ps = min(ps for ps, pe, _ in paste_info.values())
-        _fz2_pairs = [
-            (sname, ws_dict[sname].title)
-            for sname in valid_names
-            if sname in paste_info and sname in ws_dict
-        ]
-        if _fz2_pairs:
-            _lc2 = _freeze_formulas_to_values(
-                ss,
-                _fz2_pairs,
-                col_start=min_ps,
-                num_rows=NUM_ROWS,
-            )
-            _fz2_failed_r = _lc2.pop("__failed_reads__",  [])
-            _fz2_failed_w = _lc2.pop("__failed_writes__", [])
-            if _fz2_failed_r:
-                st.warning(f"⚠️ Freeze block ใหม่ อ่านไม่ได้ {len(_fz2_failed_r)} Sheet: "
-                           + ", ".join(str(x) for x in _fz2_failed_r))
-            if _fz2_failed_w:
-                st.warning(f"⚠️ Freeze block ใหม่ เขียนค่านิ่งไม่สำเร็จ {len(_fz2_failed_w)} รายการ:\n"
-                           + "\n".join(f"• {x}" for x in _fz2_failed_w))
-
-    # ── Phase 4.5: เขียน HISTORY_FORMULA_REFS ซ้ำหลัง freeze ──────────────────
-    # Phase 4 จะ freeze สูตรทั้งหมดรวมถึง HISTORY_FORMULA_REFS ด้วย
-    # เพราะฉะนั้นต้องเขียนสูตรเหล่านี้กลับไปหลัง freeze เสร็จ
-    if paste_info and bookmark_tasks:
-        ref_writes: list[dict] = []
-        for bm_ws, _ in bookmark_tasks:
-            ws_title = bm_ws.title
-            sheet_name = ws_title
-            if sheet_name not in paste_info:
-                continue
-            paste_start, _pe, _ = paste_info[sheet_name]
-            for (tmpl_row, tmpl_col), formula in HISTORY_FORMULA_REFS.items():
-                h_col = paste_start + (tmpl_col - COL_HIST_START)
-                rng_f = f"{col_letter(h_col)}{tmpl_row}"
-                ref_writes.append({
-                    "range" : f"'{ws_title}'!{rng_f}",
-                    "values": [[formula]],
-                })
-        for i in range(0, len(ref_writes), CHUNK):
-            try:
-                _sheets_retry(ss.values_batch_update, {
-                    "valueInputOption": "USER_ENTERED",
-                    "data"            : ref_writes[i:i + CHUNK],
-                })
-            except Exception:
-                pass
+    # v22: ไม่ auto-freeze block ใหม่ — ปล่อยให้เป็นสูตรไว้ก่อน
+    # การ freeze จะเกิดขึ้นใน Phase 1b.5 ของการรัน ครั้งถัดไป (เดือนหน้า)
+    # หรือกด "บันทึกค่านิ่ง" ด้วยตนเองเมื่อพร้อม
 
     _upd(0.99, "⏳ เกือบเสร็จแล้วค่ะ...")
     return results
