@@ -42,9 +42,13 @@ if pps_sheet_name is None:
 raw_ws = wb[pps_sheet_name]
 
 # อ่านข้อมูลดิบทั้งหมดเข้า memory ก่อน (เพราะจะลบชีต PPS เดิมแล้วสร้างใหม่ชื่อ PPS)
+# ใช้ iter_rows แทน max_row เพื่อหลีกเลี่ยงการอ่านแถวว่างที่มี formatting ลากยาว
 raw_data = []
-for r in range(1, raw_ws.max_row + 1):
-    raw_data.append([raw_ws.cell(row=r, column=c).value for c in range(1, raw_ws.max_column + 1)])
+for row in raw_ws.iter_rows(values_only=True):
+    # หยุดเมื่อเจอแถวว่างทั้งหมด (หลังจาก header ผ่านไปแล้ว)
+    if raw_data and all(v is None for v in row):
+        break
+    raw_data.append(list(row))
 
 # ลบชีต pps/pps05 เดิมทั้งหมด (รวมถึง PPS ดิบ)
 for name in list(wb.sheetnames):
