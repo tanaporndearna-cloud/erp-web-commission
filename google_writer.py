@@ -852,3 +852,49 @@ def read_sum_sheet(xlsx_path: str) -> tuple:
             branch_totals[branch] = daily
 
     return rows, dates, branch_totals
+
+
+# ── HISTORY_FORMULA_REFS ──────────────────────────────────────────────────────
+# แทน HISTORY_STATIC_RANGES (บันทึกเป็นค่านิ่ง)
+# ด้วยสูตรอ้างอิงคอลัมน์ A-L คงที่
+#
+# key   = (row_1indexed, col_letter)  — ตำแหน่งใน history sheet
+# value = col_letter ต้นทาง (A-L)    — สูตรจะเป็น =<src_col><row>
+#
+# ตัวอย่าง: (2, "S") → "F"  ⟹  เซลล์ S2 ใน history เขียน =F2
+HISTORY_FORMULA_REFS: dict[tuple, str] = {
+    (2,  "S"): "F",   # S2  = =F2
+    (3,  "P"): "C",   # P3  = =C3
+    (4,  "P"): "C",   # P4  = =C4
+    (4,  "S"): "F",   # S4  = =F4
+    (39, "T"): "G",   # T39 = =G39
+    (44, "T"): "G",   # T44 = =G44
+    (45, "T"): "G",   # T45 = =G45
+}
+
+
+def write_history_formula_refs(ws, row_offset: int = 0) -> int:
+    """
+    เขียนสูตรตาม HISTORY_FORMULA_REFS ลง worksheet (history sheet)
+
+    ws          : gspread Worksheet ของชีท history
+    row_offset  : ถ้า history sheet เริ่มวางข้อมูลที่แถวอื่น (ไม่ใช่แถว 1)
+                  ให้ส่ง offset เพื่อเลื่อน row ให้ถูก (ปกติ = 0)
+
+    คืนค่า: จำนวน cell ที่เขียนสูตร
+    """
+    formula_updates = []
+    for (row, col_letter), src_col in HISTORY_FORMULA_REFS.items():
+        actual_row = row + row_offset
+        formula = f"={src_col}{actual_row}"
+        formula_updates.append({
+            "range": f"{col_letter}{actual_row}",
+            "values": [[formula]]
+        })
+
+    if formula_updates:
+        BATCH = 500
+        for i in range(0, len(formula_updates), BATCH):
+            ws.batch_update(formula_updates[i:i + BATCH], value_input_option="USER_ENTERED")
+
+    return len(formula_updates)
