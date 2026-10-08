@@ -2174,5 +2174,32 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                 st.warning(f"⚠️ Freeze block ใหม่ เขียนค่านิ่งไม่สำเร็จ {len(_fz2_failed_w)} รายการ:\n"
                            + "\n".join(f"• {x}" for x in _fz2_failed_w))
 
+    # ── Phase 4.5: เขียน HISTORY_FORMULA_REFS ซ้ำหลัง freeze ──────────────────
+    # Phase 4 จะ freeze สูตรทั้งหมดรวมถึง HISTORY_FORMULA_REFS ด้วย
+    # เพราะฉะนั้นต้องเขียนสูตรเหล่านี้กลับไปหลัง freeze เสร็จ
+    if paste_info and bookmark_tasks:
+        ref_writes: list[dict] = []
+        for bm_ws, _ in bookmark_tasks:
+            ws_title = bm_ws.title
+            sheet_name = ws_title
+            if sheet_name not in paste_info:
+                continue
+            paste_start, _pe, _ = paste_info[sheet_name]
+            for (tmpl_row, tmpl_col), formula in HISTORY_FORMULA_REFS.items():
+                h_col = paste_start + (tmpl_col - COL_HIST_START)
+                rng_f = f"{col_letter(h_col)}{tmpl_row}"
+                ref_writes.append({
+                    "range" : f"'{ws_title}'!{rng_f}",
+                    "values": [[formula]],
+                })
+        for i in range(0, len(ref_writes), CHUNK):
+            try:
+                _sheets_retry(ss.values_batch_update, {
+                    "valueInputOption": "USER_ENTERED",
+                    "data"            : ref_writes[i:i + CHUNK],
+                })
+            except Exception:
+                pass
+
     _upd(0.99, "⏳ เกือบเสร็จแล้วค่ะ...")
     return results
