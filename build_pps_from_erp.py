@@ -41,13 +41,18 @@ if pps_sheet_name is None:
 
 raw_ws = wb[pps_sheet_name]
 
-# Remove existing pps05 if any
-for name in ['pps05', 'PPS05', 'pps']:
-    if name in wb.sheetnames and name != 'PPS':
+# อ่านข้อมูลดิบทั้งหมดเข้า memory ก่อน (เพราะจะลบชีต PPS เดิมแล้วสร้างใหม่ชื่อ PPS)
+raw_data = []
+for r in range(1, raw_ws.max_row + 1):
+    raw_data.append([raw_ws.cell(row=r, column=c).value for c in range(1, raw_ws.max_column + 1)])
+
+# ลบชีต pps/pps05 เดิมทั้งหมด (รวมถึง PPS ดิบ)
+for name in list(wb.sheetnames):
+    if name.lower().startswith('pps'):
         del wb[name]
 
-# Create pps05 sheet
-pps_ws = wb.create_sheet('pps05')
+# Create PPS sheet (ชื่อ "PPS" เสมอ)
+pps_ws = wb.create_sheet('PPS')
 
 # Header
 pps_ws.cell(row=1, column=1, value='Product Code')
@@ -60,16 +65,20 @@ pps_ws.cell(row=1, column=7, value='Wholesale General')
 pps_ws.cell(row=1, column=8, value='P Retail Price')
 pps_ws.cell(row=1, column=9, value='P Wholesale General')
 
+def _get(row_vals, col_1based):
+    idx = col_1based - 1
+    return row_vals[idx] if idx < len(row_vals) else None
+
 out_row = 2
-for r in range(2, raw_ws.max_row + 1):
-    prod_code = raw_ws.cell(row=r, column=3).value
+for row_vals in raw_data[1:]:   # ข้าม header row (index 0)
+    prod_code = _get(row_vals, 3)
     if not prod_code:
         continue
-    category = raw_ws.cell(row=r, column=2).value
-    desc     = raw_ws.cell(row=r, column=4).value
-    retail   = raw_ws.cell(row=r, column=16).value
-    wholesale= raw_ws.cell(row=r, column=20).value
-    p_retail = raw_ws.cell(row=r, column=17).value  # ราคาพิเศษ (col 17)
+    category = _get(row_vals, 2)
+    desc     = _get(row_vals, 4)
+    retail   = _get(row_vals, 16)
+    wholesale= _get(row_vals, 20)
+    p_retail = _get(row_vals, 17)  # ราคาพิเศษ (col 17)
 
     # E = ราคาพิเศษ: เก็บเฉพาะตัวเลข (ข้อความ เช่น "PROA" ให้ใส่ None)
     p_retail_num = p_retail if isinstance(p_retail, (int, float)) else None
@@ -89,7 +98,7 @@ for r in range(2, raw_ws.max_row + 1):
                 value=f'=(G{out_row}+H{out_row})/2')
     out_row += 1
 
-print(f"pps05 sheet created with {out_row-2} rows")
+print(f"PPS sheet created with {out_row-2} rows")
 
 wb.save(OUT_PATH)
 print(f"Saved to {OUT_PATH}")
