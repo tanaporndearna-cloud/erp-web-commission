@@ -2098,24 +2098,28 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
 
         # ── HISTORY_FORMULA_CARRY_PREV (USER_ENTERED) — สะสมทบจาก block ก่อนหน้า ──
         # สูตร: ครั้งแรก = template P51
-        #       ครั้งถัดไป = prev_block_P51 - current_block_W51
-        #         (W51 ใน block ปัจจุบันเก็บยอดหักรายเดือน เช่น -500 → ลบออกจะได้ +500)
-        # ตัวอย่าง (tmpl_col=16=P, W_OFFSET=9, width=12, COL_HIST_START=14):
-        #   มิ.ย. (paste_start=27): prev_col=16=P  → =P51           (ครั้งแรก ไม่มีประวัติเก่า)
-        #   ก.ค.  (paste_start=40): prev_col=29=AC  → =AC51-AM51   (-(-500)=+500 → 500+500=1000)
-        #   ส.ค.  (paste_start=53): prev_col=42=AP  → =AP51-AZ51   (1000+500=1500)
-        W_OFFSET = 9   # Col W (23) ใน block = COL_HIST_START(14) + 9 → เก็บยอดหักรายเดือน
+        #       ครั้งถัดไป = prev_block_P51 + current_block_deduction_51 * -1
+        # ตรรกะ: เงินวางสะสม = เดือนที่แล้ว + |ยอดหักเดือนนี้|
+        #         ยอดหักอยู่ที่ Row 51 เช่น -500 → *-1 = +500
+        # ตัวอย่าง (tmpl_col=16=P, W_OFFSET=9):
+        #   มิ.ย. (paste_start=28): prev_col=P  → =P51              (ครั้งแรก)
+        #   ส.ค.  (paste_start=41): prev_col=Q  → =Q51+AK51*-1     (500+500=1000)
+        #   ก.ย.  (paste_start=54): prev_col=AD → =AD51+AQ51*-1    (1000+500=1500)
+        W_OFFSET = 9   # offset ของ col ยอดหักใน block (เทียบจาก paste_start)
         for (tmpl_row, tmpl_col) in HISTORY_FORMULA_CARRY_PREV:
-            prev_col = paste_start - (width + 1) + (tmpl_col - COL_HIST_START)
+            # gap ระหว่าง block = 2 คอลัมน์ (paste_start = last_col + 2)
+            # → stride = width + 2  ไม่ใช่ width + 1
+            prev_col = paste_start - (width + 2) + (tmpl_col - COL_HIST_START)
             h_col    = paste_start + (tmpl_col - COL_HIST_START)
-            w_col    = paste_start + W_OFFSET   # Col W ใน history block ปัจจุบัน
-            if prev_col == tmpl_col:
-                # ครั้งแรก: ยังไม่มี history block เก่า → ใช้ค่า template เดิม
+            w_col    = paste_start + W_OFFSET   # col ยอดหักใน block ปัจจุบัน (Row 51)
+            if prev_col < COL_HIST_START:
+                # ครั้งแรก: prev_col ตกอยู่นอก history area → ยังไม่มี block เก่า
                 carry_formula = f"={col_letter(tmpl_col)}{tmpl_row}"
             else:
-                # ครั้งถัดไป: สะสม = block ก่อน - ยอดหักรายเดือน (W=-500 → -(-500)=+500)
-                carry_formula = (f"={col_letter(prev_col)}{tmpl_row}"
-                                 f"-{col_letter(w_col)}{tmpl_row}")
+                # ครั้งถัดไป: สะสม = block ก่อน + ยอดหักเดือนนี้ * -1
+                # IFERROR กัน #VALUE! กรณี prev block เก็บ "-" ข้อความแทนตัวเลข
+                carry_formula = (f"=IFERROR({col_letter(prev_col)}{tmpl_row}*1,0)"
+                                 f"+{col_letter(w_col)}{tmpl_row}*-1")
             rng_f = f"{col_letter(h_col)}{tmpl_row}"
             formula_writes.append({
                 "range" : f"'{ws_title}'!{rng_f}",
