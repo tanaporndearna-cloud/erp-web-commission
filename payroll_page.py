@@ -1887,26 +1887,9 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         # เพื่อป้องกัน paste_start เขียนทับ history เก่าที่มีแค่ข้อมูลแถว 6-36
         last_col = max(last_col_hdr, frozen_last_col.get(sheet_name, COL_HIST_END))
 
-        # ── Detect existing gap size (เพื่อให้ gap ใหม่เหมือนเดิมทุกชีท) ──
-        # ถ้ามี history block เก่าแล้ว (last_col > template end) ให้วัด gap จาก block สุดท้าย
-        # ถ้าเป็นชีทใหม่ (last_col == COL_HIST_END) ใช้ default gap = 1
-        detected_gap = 1   # default: เว้น 1 ช่อง
-        if last_col > COL_HIST_END + width - 1:
-            # last_col คือ col สุดท้ายของ block ล่าสุด
-            # last_block_start = last_col - width + 1  (1-based)
-            last_block_start = last_col - width + 1
-            # สแกน row1 ย้อนหลังจาก (last_block_start - 2) เพื่อหา col สุดท้ายของ block ก่อน
-            row1 = (rows[0] if rows else [])
-            prev_block_end = COL_HIST_END   # fallback = end of template
-            for ci in range(last_block_start - 2, COL_HIST_END - 1, -1):
-                if ci < len(row1) and str(row1[ci]).strip():
-                    prev_block_end = ci + 1   # แปลงเป็น 1-based
-                    break
-            inferred_gap = last_block_start - prev_block_end - 1
-            if inferred_gap >= 1:
-                detected_gap = inferred_gap   # ใช้ gap เดิมของชีทนี้
-
-        paste_start = last_col + detected_gap + 1
+        # เว้น 1 ช่องว่างเสมอ (ทุกชีท ทุก block) — paste_start = last_col + 2
+        detected_gap = 1
+        paste_start = last_col + 2
         paste_end   = paste_start + width
 
         if paste_end > ws.col_count:
