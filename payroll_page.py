@@ -1744,6 +1744,15 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         (50, 20): "=G50",   # Row 50 Col T → =G50
     }
 
+    # ── cells ที่ดึงค่าจาก history block เดือนก่อน (carry-forward chain) ─────
+    # key: (template_row, template_col) — 1-indexed
+    # สูตรที่สร้างอัตโนมัติ: =col_letter(prev_col){row}
+    #   ครั้งแรก (ไม่มี history เก่า): prev_col = template col เดิม → อ้างอิง template
+    #   ครั้งถัดไป: prev_col เลื่อนไปหา block ก่อนหน้า → เป็น chain ต่อเนื่อง
+    HISTORY_FORMULA_CARRY_PREV = {
+        (51, 16),   # Row 51 Col P → ดึงจาก Col P ของ history block เดือนก่อนหน้า
+    }
+
     def _col_str_to_num(s: str) -> int:
         n = 0
         for c in s:
@@ -2085,6 +2094,32 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             formula_writes.append({
                 "range" : f"'{ws_title}'!{rng_f}",
                 "values": [[formula]],
+            })
+
+        # ── HISTORY_FORMULA_CARRY_PREV (USER_ENTERED) — สะสมทบจาก block ก่อนหน้า ──
+        # สูตร: ครั้งแรก = template P51
+        #       ครั้งถัดไป = prev_block_P51 - current_block_W51
+        #         (W51 ใน block ปัจจุบันเก็บยอดหักรายเดือน เช่น -500 → ลบออกจะได้ +500)
+        # ตัวอย่าง (tmpl_col=16=P, W_OFFSET=9, width=12, COL_HIST_START=14):
+        #   มิ.ย. (paste_start=27): prev_col=16=P  → =P51           (ครั้งแรก ไม่มีประวัติเก่า)
+        #   ก.ค.  (paste_start=40): prev_col=29=AC  → =AC51-AM51   (-(-500)=+500 → 500+500=1000)
+        #   ส.ค.  (paste_start=53): prev_col=42=AP  → =AP51-AZ51   (1000+500=1500)
+        W_OFFSET = 9   # Col W (23) ใน block = COL_HIST_START(14) + 9 → เก็บยอดหักรายเดือน
+        for (tmpl_row, tmpl_col) in HISTORY_FORMULA_CARRY_PREV:
+            prev_col = paste_start - (width + 1) + (tmpl_col - COL_HIST_START)
+            h_col    = paste_start + (tmpl_col - COL_HIST_START)
+            w_col    = paste_start + W_OFFSET   # Col W ใน history block ปัจจุบัน
+            if prev_col == tmpl_col:
+                # ครั้งแรก: ยังไม่มี history block เก่า → ใช้ค่า template เดิม
+                carry_formula = f"={col_letter(tmpl_col)}{tmpl_row}"
+            else:
+                # ครั้งถัดไป: สะสม = block ก่อน - ยอดหักรายเดือน (W=-500 → -(-500)=+500)
+                carry_formula = (f"={col_letter(prev_col)}{tmpl_row}"
+                                 f"-{col_letter(w_col)}{tmpl_row}")
+            rng_f = f"{col_letter(h_col)}{tmpl_row}"
+            formula_writes.append({
+                "range" : f"'{ws_title}'!{rng_f}",
+                "values": [[carry_formula]],
             })
 
     # ── batch write RAW (bookmarks) ──
