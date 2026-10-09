@@ -97,40 +97,10 @@ def _freeze_formulas_to_values(ss, sheet_pairs, col_start: int, num_rows: int, c
     def _esc(sh: str) -> str:
         return sh.replace("'", "''")
 
-    COL_END_HARD = col_start + 574   # hard cap (~41 เดือน × 14 col)
-
-    # ── Pre-scan: อ่าน row 1 เพื่อหา bookmark column จริง (เร็ว) ──────────
-    # ป้องกัน freeze อ่าน range ใหญ่โดยไม่จำเป็น
-    prescan_ranges = [
-        f"'{_esc(wt)}'!{col_letter(col_start)}1:{col_letter(COL_END_HARD)}1"
-        for _, wt in sheet_pairs
-    ]
-    sheet_col_end: dict[str, int] = {}   # ws_title → actual last col to scan
-    for fi in range(0, len(prescan_ranges), chunk):
-        cp = sheet_pairs[fi:fi + chunk]
-        cr = prescan_ranges[fi:fi + chunk]
-        try:
-            rp = _sheets_retry(ss.values_batch_get, cr,
-                               params={"valueRenderOption": "FORMATTED_VALUE"})
-            for (sname, wt), vr in zip(cp, rp.get("valueRanges", [])):
-                row1 = vr.get("values", [[]])[0] if vr.get("values") else []
-                # หา rightmost non-empty cell ใน row 1
-                last_nonempty = 0
-                for ci, v in enumerate(row1):
-                    if v not in ("", None):
-                        last_nonempty = ci + 1   # 1-indexed relative to col_start
-                if last_nonempty:
-                    # +13 buffer (1 history block) เพื่อไม่ตัดสั้นเกินไป
-                    sheet_col_end[wt] = min(col_start + last_nonempty + 12, COL_END_HARD)
-                else:
-                    sheet_col_end[wt] = col_start + 12   # ยังไม่มีประวัติ — อ่านแค่ 1 block
-        except Exception:
-            # prescan ล้มเหลว → fallback ใช้ hard cap
-            for _, wt in sheet_pairs[fi:fi + chunk]:
-                sheet_col_end[wt] = COL_END_HARD
+    COL_END_MAX = col_start + 574   # รองรับประวัติ ~575 คอลัมน์ (~41 เดือน × 14 col)
 
     fz_ranges = [
-        f"'{_esc(wt)}'!{col_letter(col_start)}1:{col_letter(sheet_col_end.get(wt, COL_END_HARD))}{num_rows}"
+        f"'{_esc(wt)}'!{col_letter(col_start)}1:{col_letter(COL_END_MAX)}{num_rows}"
         for _, wt in sheet_pairs
     ]
 
@@ -533,18 +503,13 @@ def render_payroll_page(gc: gspread.Client,
         # ── Freeze ประวัติ (แสดงเสมอ ไม่ต้องอัปโหลดไฟล์ก่อน) ──────────
         st.divider()
         st.caption("🔒 Freeze ประวัติ — แปลงสูตรในคอลัมน์ประวัติ (Z เป็นต้นไป) ให้เป็นค่านิ่ง กดได้ทุกเวลา ไม่ต้องรันเงินเดือนใหม่")
+        # freeze เฉพาะชีทพนักงาน (ชื่อขึ้นต้นด้วยตัวเลขตามด้วย _) เช่น "99001_สมชาย"
+        _fz_all_pairs = [
+            (sh, sh) for sh in visible_sheets
+            if re.match(r"^\d+_", sh)
+        ]
         if st.button("🔒 Freeze ประวัติ → ค่านิ่ง (กดได้ทุกเวลา)",
                      key="btn_freeze_only", use_container_width=True):
-            # ดึง sheet list สดจาก Google Sheets ตอนกดปุ่ม (ไม่ใช้ visible_sheets ที่ cache ไว้ตอน page load)
-            # เพื่อให้นับชีทถูกต้องแม้มีการลบ/เพิ่มชีทหลัง page load
-            try:
-                _fresh_sheets = [ws.title for ws in _sheets_retry(ss.worksheets)]
-            except Exception:
-                _fresh_sheets = visible_sheets   # fallback ถ้า API ล้มเหลว
-            _fz_all_pairs = [
-                (sh, sh) for sh in _fresh_sheets
-                if re.match(r"^\d+_", sh)
-            ]
             _freeze_history_standalone(_fz_all_pairs, ss)
 
     # ══════════════════════════════════════════════════════════════
@@ -1290,38 +1255,6 @@ def _run_sheets_fast(pairs, att_df, auto_month, auto_year, ss, holidays_map=None
                             "fields": "userEnteredFormat.backgroundColor"
                         }})
 
-            # ── format เวลาเข้า/ออก → h:mm "น." (ทุกครั้งที่รัน) ─────────
-            # DATA_END - 2 เพื่อไม่ให้ format ทับแถว summary (row 39-40)
-            for tc in (ti_cols + to_cols):
-                # ใส่ format h:mm "น." เฉพาะ data rows
-                all_fmt_reqs.append({"repeatCell": {
-                    "range": {
-                        "sheetId"         : sheet_id,
-                        "startRowIndex"   : CFG["DATA_START"] - 1,
-                        "endRowIndex"     : CFG["DATA_END"] - 2,
-                        "startColumnIndex": tc - 1,
-                        "endColumnIndex"  : tc,
-                    },
-                    "cell" : {"userEnteredFormat": {
-                        "numberFormat": {"type": "TIME", "pattern": 'h:mm "น."'}
-                    }},
-                    "fields": "userEnteredFormat.numberFormat"
-                }})
-                # clear format แถว summary (row 39-40) → General (ไม่ใช่ time format)
-                all_fmt_reqs.append({"repeatCell": {
-                    "range": {
-                        "sheetId"         : sheet_id,
-                        "startRowIndex"   : CFG["DATA_END"] - 2,
-                        "endRowIndex"     : CFG["DATA_END"],
-                        "startColumnIndex": tc - 1,
-                        "endColumnIndex"  : tc,
-                    },
-                    "cell" : {"userEnteredFormat": {
-                        "numberFormat": {"type": "NUMBER", "pattern": "0.00"}
-                    }},
-                    "fields": "userEnteredFormat.numberFormat"
-                }})
-
             success_cnt += 1
 
         progress_bar.progress(base_prog + prog_span * 0.65)
@@ -1917,7 +1850,6 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
     src_ranges_list: list[str]   = []
 
     resize_reqs = []   # รวม resize ทุกชีตไว้ก่อน — batch ครั้งเดียว
-    _debug_paste: list[str] = []   # เก็บ debug info สำหรับแสดงผล
 
     for sheet_name in valid_names:
         ws      = ws_dict[sheet_name]
@@ -1940,24 +1872,12 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                         last_col_hdr = actual_col
                     break
 
-        # ── FIX v23: ใช้ bookmark แถว 1 เป็นหลักเสมอ ──────────────────────
-        # bookmark ถูกเขียนที่ paste_end-1 (จุดสิ้นสุด block จริงๆ) ทุกครั้งที่บันทึก
-        # → last_col_hdr ชี้ตำแหน่งสิ้นสุด block ที่แม่นยำ → gap = 1 col เสมอ
-        #
-        # (v20 เคยใช้ frozen_last_col override เพื่อป้องกัน bookmark เก่าที่ผิด
-        #  แต่ frozen_last_col scan data แถว 6+ ซึ่งบางสูตรอาจ evaluate นอก block
-        #  ทำให้ frozen_last_col สูงกว่าจริง 1-2 col → gap บวมเป็น 2-3 col แทน)
-        fzlc = frozen_last_col.get(sheet_name)   # ยังเก็บไว้ใช้ใน debug log
-        last_col = last_col_hdr
-        _src = f"bookmark={last_col_hdr}"
+        # ใช้ค่าที่ Phase 1b.5 detect ได้จากการ scan ทุกแถว (แม้แถว 1-5 ว่าง)
+        # เพื่อป้องกัน paste_start เขียนทับ history เก่าที่มีแค่ข้อมูลแถว 6-36
+        last_col = max(last_col_hdr, frozen_last_col.get(sheet_name, COL_HIST_END))
 
         paste_start = last_col + 2
         paste_end   = paste_start + width
-
-        _debug_paste.append(
-            f"{sheet_name}: hdr={last_col_hdr}  fz={fzlc or '–'}  "
-            f"→ {_src}  last_col={last_col}  paste_start={paste_start}"
-        )
 
         if paste_end > ws.col_count:
             resize_reqs.append({
@@ -1978,11 +1898,6 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             f"'{sheet_name}'!{col_letter(COL_HIST_START)}1"
             f":{col_letter(COL_HIST_END)}{NUM_ROWS}"
         )
-
-    # ── DEBUG: แสดง paste position ของทุกชีต (ใช้ diagnose gap issue) ──
-    if _debug_paste:
-        with st.expander("🔍 DEBUG — paste position (คลิกเพื่อดู)", expanded=False):
-            st.code("\n".join(_debug_paste), language=None)
 
     # batch resize ทุกชีตที่ต้องขยายพร้อมกัน (1 API call แทน N calls)
     if resize_reqs:
@@ -2208,9 +2123,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                     except Exception:
                         pass
 
-    # v22: ไม่ auto-freeze block ใหม่ — ปล่อยให้เป็นสูตรไว้ก่อน
-    # การ freeze จะเกิดขึ้นใน Phase 1b.5 ของการรัน ครั้งถัดไป (เดือนหน้า)
-    # หรือกด "บันทึกค่านิ่ง" ด้วยตนเองเมื่อพร้อม
+    # Phase 4 (auto-freeze block ใหม่) ถูกปิดไว้ — Freeze ทำได้เฉพาะตอนกดปุ่ม "🔒 Freeze ประวัติ"
 
     _upd(0.99, "⏳ เกือบเสร็จแล้วค่ะ...")
     return results
