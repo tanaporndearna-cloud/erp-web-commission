@@ -1857,7 +1857,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                    "\n".join(f"• {x}" for x in _fz_failed_w))
 
     # ── Phase 1c: คำนวณ paste position + resize ถ้าจำเป็น ────────────
-    paste_info: dict[str, tuple] = {}   # name → (paste_start, paste_end, ws)
+    paste_info: dict[str, tuple] = {}   # name → (paste_start, paste_end, ws, detected_gap)
     src_ranges_list: list[str]   = []
 
     resize_reqs = []   # รวม resize ทุกชีตไว้ก่อน — batch ครั้งเดียว
@@ -1887,7 +1887,26 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         # เพื่อป้องกัน paste_start เขียนทับ history เก่าที่มีแค่ข้อมูลแถว 6-36
         last_col = max(last_col_hdr, frozen_last_col.get(sheet_name, COL_HIST_END))
 
-        paste_start = last_col + 2
+        # ── Detect existing gap size (เพื่อให้ gap ใหม่เหมือนเดิมทุกชีท) ──
+        # ถ้ามี history block เก่าแล้ว (last_col > template end) ให้วัด gap จาก block สุดท้าย
+        # ถ้าเป็นชีทใหม่ (last_col == COL_HIST_END) ใช้ default gap = 1
+        detected_gap = 1   # default: เว้น 1 ช่อง
+        if last_col > COL_HIST_END + width - 1:
+            # last_col คือ col สุดท้ายของ block ล่าสุด
+            # last_block_start = last_col - width + 1  (1-based)
+            last_block_start = last_col - width + 1
+            # สแกน row1 ย้อนหลังจาก (last_block_start - 2) เพื่อหา col สุดท้ายของ block ก่อน
+            row1 = (rows[0] if rows else [])
+            prev_block_end = COL_HIST_END   # fallback = end of template
+            for ci in range(last_block_start - 2, COL_HIST_END - 1, -1):
+                if ci < len(row1) and str(row1[ci]).strip():
+                    prev_block_end = ci + 1   # แปลงเป็น 1-based
+                    break
+            inferred_gap = last_block_start - prev_block_end - 1
+            if inferred_gap >= 1:
+                detected_gap = inferred_gap   # ใช้ gap เดิมของชีทนี้
+
+        paste_start = last_col + detected_gap + 1
         paste_end   = paste_start + width
 
         if paste_end > ws.col_count:
@@ -1904,7 +1923,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                 }
             })
 
-        paste_info[sheet_name] = (paste_start, paste_end, ws)
+        paste_info[sheet_name] = (paste_start, paste_end, ws, detected_gap)
         src_ranges_list.append(
             f"'{sheet_name}'!{col_letter(COL_HIST_START)}1"
             f":{col_letter(COL_HIST_END)}{NUM_ROWS}"
@@ -1964,7 +1983,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
 
     # ── Phase 1e: สร้าง copy_reqs (format only) + write_tasks ──────────
     for sheet_name in valid_names:
-        paste_start, paste_end, ws = paste_info[sheet_name]
+        paste_start, paste_end, ws, _detected_gap = paste_info[sheet_name]
         src_values = src_data.get(sheet_name, [])
 
         # unmerge destination ก่อน เพื่อป้องกัน "partially intersects a merge" error
@@ -2068,7 +2087,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         fdata = formula_tw.get(sheet_name, [])
         if sheet_name not in paste_info:
             continue
-        paste_start, _pe, _ = paste_info[sheet_name]
+        paste_start, _pe, _, detected_gap = paste_info[sheet_name]
         col_offset = paste_start - COL_HIST_START
         hist_t     = paste_start + (TW_START - COL_HIST_START)
 
@@ -2103,19 +2122,22 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             #       ครั้งถัดไป = prev_block_P51 + current_block_deduction_51 * -1
             # ตรรกะ: เงินวางสะสม = เดือนที่แล้ว + |ยอดหักเดือนนี้|
             #         ยอดหักอยู่ที่ Row 51 เช่น -500 → *-1 = +500
-            # stride = width เพราะ gap = 1 คอลัมน์
-            # ตัวอย่าง (tmpl_col=16=P, W_OFFSET=9, gap=1 ช่องว่าง):
-            #   มิ.ย. (paste_start=27=AA): prev_col=16(P) ≤ 25 → =P51          (ครั้งแรก)
-            #   ก.ค.  (paste_start=40=AN): prev_col=29(AC) → =IFERROR(AC51*1,0)+AW51*-1
-            #   ส.ค.  (paste_start=53=BA): prev_col=42(AP) → =IFERROR(AP51*1,0)+BJ51*-1
+            # stride = width + detected_gap (ใช้ gap เดียวกับ block เก่าในชีทนี้)
+            # ตัวอย่าง (tmpl_col=16=P, W_OFFSET=9, gap=detected_gap):
+            #   ครั้งแรก (prev_col ≤ COL_HIST_END=25): → =P51
+            #   gap=1: block2 prev_col = paste_start - 13 + 2 = block1_P ✓
+            #   gap=2: block2 prev_col = paste_start - 14 + 2 = block1_P ✓
             W_OFFSET = 9   # offset ของ col ยอดหักใน block (เทียบจาก paste_start)
             for (tmpl_row, tmpl_col) in HISTORY_FORMULA_CARRY_PREV:
-                # stride = width + 1 เพราะ gap = 1 คอลัมน์ว่าง (paste_start = last_col + 2):
+                # stride = width + detected_gap (= ระยะจาก start block นี้ ถึง start block ก่อน)
                 #   last_col ของ block = paste_start + width - 1
-                #   paste_start ถัดไป = last_col + 2 = paste_start + width + 1
-                #   ตัวอย่าง: template N-Y(14-25), block1 starts AA(27), block2 starts AN(40)
-                #   prev_col block2: 40 - 13 + 2 = 29(AC) = block1 P cell ✓
-                prev_col = paste_start - (width + 1) + (tmpl_col - COL_HIST_START)
+                #   paste_start ถัดไป = last_col + detected_gap + 1 = paste_start + width + detected_gap
+                #   ตัวอย่าง gap=1: template N-Y(14-25), block1 starts AA(27), block2 starts AN(40)
+                #     prev_col block2: 40 - 13 + 2 = 29(AC) = block1 P cell ✓
+                #   ตัวอย่าง gap=2: block1 starts AA(27), block2 starts AO(41)
+                #     stride=14, prev_col: 41 - 14 + 2 = 29(AC) = block1 P cell ✓
+                stride   = width + detected_gap
+                prev_col = paste_start - stride + (tmpl_col - COL_HIST_START)
                 h_col    = paste_start + (tmpl_col - COL_HIST_START)
                 w_col    = paste_start + W_OFFSET   # col ยอดหักใน block ปัจจุบัน (Row 51)
                 if prev_col <= COL_HIST_END:
