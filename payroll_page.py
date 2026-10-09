@@ -149,7 +149,9 @@ def _freeze_formulas_to_values(ss, sheet_pairs, col_start: int, num_rows: int, c
                     fml_rows: list[tuple[int, str]] = []
                     for ri, row_f in enumerate(rows_f):
                         cf = row_f[ci] if ci < len(row_f) else ""
-                        if isinstance(cf, str) and cf.startswith("="):
+                        # ข้าม =IMAGE(...) — frozen value จะเป็นค่าว่างทำให้รูปหาย
+                        if isinstance(cf, str) and cf.startswith("=") and \
+                                not re.match(r'=IMAGE\s*\(', cf, re.IGNORECASE):
                             dv = (rows_d[ri][ci]
                                   if ri < len(rows_d) and ci < len(rows_d[ri])
                                   else "")
@@ -1705,7 +1707,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
       Phase 2: copyPaste PASTE_NORMAL (เส้นตาราง/สี/header + สูตรครบ)
       Phase 3: write bookmark month_yr เท่านั้น (ไม่ต้อง write values ทับ)
     """
-    COL_HIST_START = 13
+    COL_HIST_START = 14
     COL_HIST_END   = 25
     NUM_ROWS       = 100   # บันทึกถึงแถว 100
     width          = COL_HIST_END - COL_HIST_START + 1
