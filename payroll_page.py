@@ -1883,9 +1883,14 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                         last_col_hdr = actual_col
                     break
 
-        # ใช้ค่าที่ Phase 1b.5 detect ได้จากการ scan ทุกแถว (แม้แถว 1-5 ว่าง)
-        # เพื่อป้องกัน paste_start เขียนทับ history เก่าที่มีแค่ข้อมูลแถว 6-36
-        last_col = max(last_col_hdr, frozen_last_col.get(sheet_name, COL_HIST_END))
+        # ถ้า last_col_hdr > COL_HIST_END แสดงว่าเจอ bookmark จริง (เขียนไว้แถว 1 สุดท้าย block)
+        # → เชื่อ bookmark ตรงๆ เพราะมันคือ paste_end-1 ของ block เดิมพอดี
+        # ถ้า last_col_hdr == COL_HIST_END แสดงว่าไม่มี bookmark (ชีทใหม่ / ยังไม่เคยบันทึก)
+        # → ใช้ frozen_last_col เป็น safety net ป้องกัน overwrite ข้อมูลเก่า
+        if last_col_hdr > COL_HIST_END:
+            last_col = last_col_hdr          # bookmark col = end of last block → gap แน่นอน 1 ช่อง
+        else:
+            last_col = max(last_col_hdr, frozen_last_col.get(sheet_name, COL_HIST_END))
 
         # เว้น 1 ช่องว่างเสมอ (ทุกชีท ทุก block) — paste_start = last_col + 2
         detected_gap = 1
