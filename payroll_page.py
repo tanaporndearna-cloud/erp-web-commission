@@ -2097,39 +2097,37 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             })
 
         # ── HISTORY_FORMULA_CARRY_PREV (USER_ENTERED) — สะสมทบจาก block ก่อนหน้า ──
-        # สูตร: ครั้งแรก = template P51
-        #       ครั้งถัดไป = prev_block_P51 + current_block_deduction_51 * -1
-        # ตรรกะ: เงินวางสะสม = เดือนที่แล้ว + |ยอดหักเดือนนี้|
-        #         ยอดหักอยู่ที่ Row 51 เช่น -500 → *-1 = +500
-        # stride = width + 1 (ไม่ใช่ width + 2)
-        #   template block: cols 14-25 (N-Y), width=12
-        #   history block1: paste_start=27 (AA), last_col=38 (AL)
-        #   history block2: paste_start=40 (AN), stride=40-27=13=width+1
-        # ตัวอย่าง (tmpl_col=16=P, W_OFFSET=9):
-        #   มิ.ย. (paste_start=27): prev_col=16(P) ≤ COL_HIST_END(25) → =P51   (ครั้งแรก)
-        #   ส.ค.  (paste_start=40): prev_col=29(AC) → =IFERROR(AC51*1,0)+AN51*-1 (1000)
-        #   ก.ย.  (paste_start=53): prev_col=42(AP) → =IFERROR(AP51*1,0)+AB51*-1 (1500)
-        W_OFFSET = 9   # offset ของ col ยอดหักใน block (เทียบจาก paste_start)
-        for (tmpl_row, tmpl_col) in HISTORY_FORMULA_CARRY_PREV:
-            # stride = width เพราะ gap = 1 คอลัมน์:
-            #   last_col ของ block = paste_start + width - 1
-            #   paste_start ถัดไป = last_col + 1 = paste_start + width - 1 + 1 = paste_start + width
-            prev_col = paste_start - width + (tmpl_col - COL_HIST_START)
-            h_col    = paste_start + (tmpl_col - COL_HIST_START)
-            w_col    = paste_start + W_OFFSET   # col ยอดหักใน block ปัจจุบัน (Row 51)
-            if prev_col <= COL_HIST_END:
-                # ครั้งแรก: prev_col ยังอยู่ในช่วง template (14-25) → ไม่มี history block เก่า
-                carry_formula = f"={col_letter(tmpl_col)}{tmpl_row}"
-            else:
-                # ครั้งถัดไป: สะสม = block ก่อน + ยอดหักเดือนนี้ * -1
-                # IFERROR กัน #VALUE! กรณี prev block เก็บ "-" ข้อความแทนตัวเลข
-                carry_formula = (f"=IFERROR({col_letter(prev_col)}{tmpl_row}*1,0)"
-                                 f"+{col_letter(w_col)}{tmpl_row}*-1")
-            rng_f = f"{col_letter(h_col)}{tmpl_row}"
-            formula_writes.append({
-                "range" : f"'{ws_title}'!{rng_f}",
-                "values": [[carry_formula]],
-            })
+        # ยกเว้นชีท 99013_เอ — ไม่ต้องทำ carry-forward เงินวาง
+        if sheet_name != "99013_เอ":
+            # สูตร: ครั้งแรก = template P51
+            #       ครั้งถัดไป = prev_block_P51 + current_block_deduction_51 * -1
+            # ตรรกะ: เงินวางสะสม = เดือนที่แล้ว + |ยอดหักเดือนนี้|
+            #         ยอดหักอยู่ที่ Row 51 เช่น -500 → *-1 = +500
+            # stride = width เพราะ gap = 1 คอลัมน์
+            # ตัวอย่าง (tmpl_col=16=P, W_OFFSET=9):
+            #   มิ.ย. (paste_start=26): prev_col=16(P) ≤ COL_HIST_END(25) → =P51   (ครั้งแรก)
+            #   ก.ค.  (paste_start=38): prev_col=28(AB) → =IFERROR(AB51*1,0)+AK51*-1 (1000)
+            W_OFFSET = 9   # offset ของ col ยอดหักใน block (เทียบจาก paste_start)
+            for (tmpl_row, tmpl_col) in HISTORY_FORMULA_CARRY_PREV:
+                # stride = width เพราะ gap = 1 คอลัมน์:
+                #   last_col ของ block = paste_start + width - 1
+                #   paste_start ถัดไป = last_col + 1 = paste_start + width
+                prev_col = paste_start - width + (tmpl_col - COL_HIST_START)
+                h_col    = paste_start + (tmpl_col - COL_HIST_START)
+                w_col    = paste_start + W_OFFSET   # col ยอดหักใน block ปัจจุบัน (Row 51)
+                if prev_col <= COL_HIST_END:
+                    # ครั้งแรก: prev_col ยังอยู่ในช่วง template (14-25) → ไม่มี history block เก่า
+                    carry_formula = f"={col_letter(tmpl_col)}{tmpl_row}"
+                else:
+                    # ครั้งถัดไป: สะสม = block ก่อน + ยอดหักเดือนนี้ * -1
+                    # IFERROR กัน #VALUE! กรณี prev block เก็บ "-" ข้อความแทนตัวเลข
+                    carry_formula = (f"=IFERROR({col_letter(prev_col)}{tmpl_row}*1,0)"
+                                     f"+{col_letter(w_col)}{tmpl_row}*-1")
+                rng_f = f"{col_letter(h_col)}{tmpl_row}"
+                formula_writes.append({
+                    "range" : f"'{ws_title}'!{rng_f}",
+                    "values": [[carry_formula]],
+                })
 
     # ── batch write RAW (bookmarks) ──
     for i in range(0, len(raw_writes), CHUNK):
