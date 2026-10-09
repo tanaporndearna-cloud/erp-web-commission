@@ -1887,7 +1887,7 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         # เพื่อป้องกัน paste_start เขียนทับ history เก่าที่มีแค่ข้อมูลแถว 6-36
         last_col = max(last_col_hdr, frozen_last_col.get(sheet_name, COL_HIST_END))
 
-        paste_start = last_col + 1
+        paste_start = last_col + 2
         paste_end   = paste_start + width
 
         if paste_end > ws.col_count:
@@ -2104,15 +2104,18 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
             # ตรรกะ: เงินวางสะสม = เดือนที่แล้ว + |ยอดหักเดือนนี้|
             #         ยอดหักอยู่ที่ Row 51 เช่น -500 → *-1 = +500
             # stride = width เพราะ gap = 1 คอลัมน์
-            # ตัวอย่าง (tmpl_col=16=P, W_OFFSET=9):
-            #   มิ.ย. (paste_start=26): prev_col=16(P) ≤ COL_HIST_END(25) → =P51   (ครั้งแรก)
-            #   ก.ค.  (paste_start=38): prev_col=28(AB) → =IFERROR(AB51*1,0)+AK51*-1 (1000)
+            # ตัวอย่าง (tmpl_col=16=P, W_OFFSET=9, gap=1 ช่องว่าง):
+            #   มิ.ย. (paste_start=27=AA): prev_col=16(P) ≤ 25 → =P51          (ครั้งแรก)
+            #   ก.ค.  (paste_start=40=AN): prev_col=29(AC) → =IFERROR(AC51*1,0)+AW51*-1
+            #   ส.ค.  (paste_start=53=BA): prev_col=42(AP) → =IFERROR(AP51*1,0)+BJ51*-1
             W_OFFSET = 9   # offset ของ col ยอดหักใน block (เทียบจาก paste_start)
             for (tmpl_row, tmpl_col) in HISTORY_FORMULA_CARRY_PREV:
-                # stride = width เพราะ gap = 1 คอลัมน์:
+                # stride = width + 1 เพราะ gap = 1 คอลัมน์ว่าง (paste_start = last_col + 2):
                 #   last_col ของ block = paste_start + width - 1
-                #   paste_start ถัดไป = last_col + 1 = paste_start + width
-                prev_col = paste_start - width + (tmpl_col - COL_HIST_START)
+                #   paste_start ถัดไป = last_col + 2 = paste_start + width + 1
+                #   ตัวอย่าง: template N-Y(14-25), block1 starts AA(27), block2 starts AN(40)
+                #   prev_col block2: 40 - 13 + 2 = 29(AC) = block1 P cell ✓
+                prev_col = paste_start - (width + 1) + (tmpl_col - COL_HIST_START)
                 h_col    = paste_start + (tmpl_col - COL_HIST_START)
                 w_col    = paste_start + W_OFFSET   # col ยอดหักใน block ปัจจุบัน (Row 51)
                 if prev_col <= COL_HIST_END:
