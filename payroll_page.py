@@ -1856,6 +1856,22 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
         st.warning(f"⚠️ Freeze เขียนค่านิ่งไม่สำเร็จ {len(_fz_failed_w)} รายการ:\n" +
                    "\n".join(f"• {x}" for x in _fz_failed_w))
 
+    # ── Phase 1c-pre: ดึง merge info จาก Sheets API ────────────────────
+    # ใช้ merge info ใน row 1 เพื่อหา end ของ block ล่าสุดแทนการ scan row 1
+    # เพราะ PASTE_NORMAL copy merge มาด้วย → bookmark ใน merged cell อ่านกลับไม่ได้
+    _sheet_merges: dict[str, list] = {}   # sheet_name → list of merge GridRange dicts
+    try:
+        _url_meta = f"https://sheets.googleapis.com/v4/spreadsheets/{ss.id}"
+        _resp_meta = ss.client.auth.get(
+            _url_meta,
+            params={"fields": "sheets(properties.title,merges)", "includeGridData": "false"}
+        )
+        for _sh in _resp_meta.json().get("sheets", []):
+            _title = _sh.get("properties", {}).get("title", "")
+            _sheet_merges[_title] = _sh.get("merges", [])
+    except Exception:
+        _sheet_merges = {}
+
     # ── Phase 1c: คำนวณ paste position + resize ถ้าจำเป็น ────────────
     paste_info: dict[str, tuple] = {}   # name → (paste_start, paste_end, ws, detected_gap)
     src_ranges_list: list[str]   = []
@@ -1883,13 +1899,20 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                         last_col_hdr = actual_col
                     break
 
-        # ถ้า last_col_hdr > COL_HIST_END แสดงว่าเจอ bookmark จริง (เขียนไว้แถว 1 สุดท้าย block)
-        # → เชื่อ bookmark ตรงๆ เพราะมันคือ paste_end-1 ของ block เดิมพอดี
-        # ถ้า last_col_hdr == COL_HIST_END แสดงว่าไม่มี bookmark (ชีทใหม่ / ยังไม่เคยบันทึก)
-        # → ใช้ frozen_last_col เป็น safety net ป้องกัน overwrite ข้อมูลเก่า
-        if last_col_hdr > COL_HIST_END:
-            last_col = last_col_hdr          # bookmark col = end of last block → gap แน่นอน 1 ช่อง
+        # ── หา last_col จาก merge info (แม่นยำ) ──────────────────────────
+        # PASTE_NORMAL copy merge มาด้วย → row 1 ของทุก block เป็น merged cell
+        # → values.batchGet อ่านได้แค่ top-left ของ merge ไม่ใช่ end → ใช้ merge API แทน
+        _merges_row1 = [
+            m for m in _sheet_merges.get(sheet_name, [])
+            if m.get("startRowIndex", 0) == 0          # row 1 (0-based)
+            and m.get("endRowIndex", 0) == 1            # single-row merge
+            and m.get("startColumnIndex", 0) >= COL_HIST_START - 1  # in history area
+        ]
+        if _merges_row1:
+            # endColumnIndex คือ 0-based exclusive = 1-based last col ของ merge
+            last_col = max(m["endColumnIndex"] for m in _merges_row1)
         else:
+            # fallback: ไม่มี merge info → ใช้ frozen scan (แม่นกว่า row-1 scan)
             last_col = max(last_col_hdr, frozen_last_col.get(sheet_name, COL_HIST_END))
 
         # เว้น 1 ช่องว่างเสมอ (ทุกชีท ทุก block) — paste_start = last_col + 2
