@@ -2076,6 +2076,55 @@ def _export_history_batch(ss: gspread.Spreadsheet, sheet_names: list,
                                     r["ok"]  = False
                                     r["msg"] = f"copy format ล้มเหลว: {e2}"
 
+    # ── Phase 2.5: clear format gap column + cols หลัง block ────────────────────
+    # PASTE_NORMAL อาจ copy row-level background color ออกนอก block → ลามไปคอลัมน์ว่างหลัง block
+    # → clear format ของ (1) gap col 1 ช่องก่อน block และ (2) 30 cols หลัง paste_end
+    CLEAR_EXTRA = 30
+    clear_fmt_reqs: list[dict] = []
+    for _sn in valid_names:
+        if _sn not in paste_info:
+            continue
+        _ps, _pe, _ws, _dgap = paste_info[_sn]
+        # (1) gap column: 1-based (_ps - 1) → 0-based (_ps - 2)
+        _gap_0 = _ps - 2
+        if _gap_0 >= (COL_HIST_START - 1):   # ไม่ clear ทับ template (col 14-25)
+            clear_fmt_reqs.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId"         : _ws.id,
+                        "startRowIndex"   : 0,
+                        "endRowIndex"     : NUM_ROWS,
+                        "startColumnIndex": _gap_0,
+                        "endColumnIndex"  : _gap_0 + 1,
+                    },
+                    "cell"  : {"userEnteredFormat": {}},
+                    "fields": "userEnteredFormat",
+                }
+            })
+        # (2) cols หลัง block: 0-based [_pe-1, _pe-1+CLEAR_EXTRA)
+        _after_0 = _pe - 1   # 0-based exclusive end ของ block = first col after block
+        clear_fmt_reqs.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId"         : _ws.id,
+                    "startRowIndex"   : 0,
+                    "endRowIndex"     : NUM_ROWS,
+                    "startColumnIndex": _after_0,
+                    "endColumnIndex"  : _after_0 + CLEAR_EXTRA,
+                },
+                "cell"  : {"userEnteredFormat": {}},
+                "fields": "userEnteredFormat",
+            }
+        })
+    if clear_fmt_reqs:
+        _upd(0.78, f"⏳ กำลังล้างสีช่องว่าง ({len(valid_names)} Sheet)...")
+        for _i in range(0, len(clear_fmt_reqs), CP_CHUNK):
+            try:
+                _sheets_retry(ss.batch_update,
+                              {"requests": clear_fmt_reqs[_i:_i + CP_CHUNK]})
+            except Exception:
+                pass   # non-critical — ไม่กระทบค่าข้อมูล
+
     # ── Phase 3: bookmark + เขียนสูตร col T-W ลง history block ──────────────────
     # รวม writes ทุก sheet เป็น 2 batch calls (RAW + USER_ENTERED)
     # แทนที่จะ loop ทีละ sheet ทีละ range (~700 calls → ~2 calls)
