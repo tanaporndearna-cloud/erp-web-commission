@@ -385,16 +385,21 @@ def _update_salary_summary(ss: "gspread.Spreadsheet", auto_month: int, auto_year
         g1_label = col_letter(block_col(latest_block - 1, BLOCK_COL10_OFF)) + str(ROW_SALARY) if latest_block >= 2 else ""
         i1_label = com_col_l + str(ROW_SALARY)
         j1_label = f"SUM({com_col_l}{ROW_COM_START}:{com_col_l}{ROW_COM_END})"
-        k1_label = "I+J"
+
         u1_label = col_letter(block_col(latest_block, BLOCK_COL7_OFF)) + str(ROW_BASE)
         v1_label = com_col_l + str(ROW_BASE)
 
+        # ── B1: ชื่อเดือนปัจจุบัน (พ.ศ.) ──────────────────────────────────
+        thai_year  = auto_year + 543
+        title_text = f"สรุปเงินเดือน {n0_lbl} {thai_year}"
+
         upd = [
+            {"range": "B1", "values": [[title_text]]},          # ชื่อเดือน-ปี
             {"range": "F1", "values": [[f1_label]]},
             {"range": "G1", "values": [[g1_label]]},
             {"range": "I1", "values": [[i1_label]]},
             {"range": "J1", "values": [[j1_label]]},
-            {"range": "K1", "values": [[k1_label]]},
+
             {"range": "U1", "values": [[u1_label]]},
             {"range": "V1", "values": [[v1_label]]},
             {"range": "F2", "values": [[n2_lbl]]},
