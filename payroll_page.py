@@ -386,7 +386,13 @@ def _update_salary_summary(ss: "gspread.Spreadsheet", auto_month: int, auto_year
             ranges.append(f"{com_col}{ROW_COM_START}:{com_col}{ROW_COM_END}")
             ranges.append(f"{col_letter(block_col(latest_block, BLOCK_COL7_OFF))}{ROW_BASE}")
             ranges.append(f"{col_letter(block_col(latest_block, BLOCK_COL10_OFF))}{ROW_BASE}")
-            results = _sheets_retry(ws_emp.batch_get, ranges)
+            try:
+                results = _sheets_retry(ws_emp.batch_get, ranges)
+            except Exception:
+                # ชีทนี้มีคอลัมน์น้อยกว่า latest_block → ข้ามไป ใส่ 0
+                emp_data[emp_id] = {"f": 0.0, "g": 0.0, "i": 0.0,
+                                    "j": 0.0, "k": 0.0, "u": 0.0, "v": 0.0}
+                continue
             ri = 0
             f_val = g_val = 0.0
             if latest_block >= 3:
