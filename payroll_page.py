@@ -390,8 +390,8 @@ def _update_salary_summary(ss: "gspread.Spreadsheet", auto_month: int, auto_year
         v1_label = com_col_l + str(ROW_BASE)
 
         # ── B1: ชื่อเดือนปัจจุบัน (พ.ศ.) ──────────────────────────────────
-        thai_year  = auto_year + 543
-        title_text = f"สรุปเงินเดือน {n0_lbl} {thai_year}"
+        # auto_year เป็น พ.ศ. อยู่แล้ว ไม่ต้องบวก 543
+        title_text = f"สรุปเงินเดือน {n0_lbl} {auto_year}"
 
         upd = [
             {"range": "B1", "values": [[title_text]]},          # ชื่อเดือน-ปี
