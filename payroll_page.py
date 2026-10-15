@@ -462,7 +462,7 @@ def render_payroll_page(gc: gspread.Client,
         except Exception:
             ss_db = None
 
-    visible_sheets = [ws.title for ws in ss.worksheets()]
+    visible_sheets = [ws.title for ws in _sheets_retry(ss.worksheets)]
 
     # ══════════════════════════════════════════════════════════════
     # คิดเงินเดือนพนักงาน — Import เวลาเข้า-ออกงาน
