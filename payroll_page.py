@@ -370,50 +370,16 @@ def _update_salary_summary(ss: "gspread.Spreadsheet", auto_month: int, auto_year
             f"U{DATA_START_ROW}:V{last_emp_row}",
         ])
 
-        # ── 6. อ่านข้อมูลพนักงานแบบ batch (40–80%) ──────────────
-        emp_data = {}
-        com_col = col_letter(block_col(latest_block, BLOCK_COL10_OFF))
-        total_emp = len(emp_ws_map)
-        for emp_idx, (emp_id, ws_emp) in enumerate(emp_ws_map.items()):
-            pct = 40 + int(40 * emp_idx / total_emp)
-            _prog(f"📊 [{pct}%] อ่านข้อมูล {emp_idx+1}/{total_emp}: {ws_emp.title}")
-            ranges = []
-            if latest_block >= 3:
-                ranges.append(f"{col_letter(block_col(latest_block-2, BLOCK_COL10_OFF))}{ROW_SALARY}")
-            if latest_block >= 2:
-                ranges.append(f"{col_letter(block_col(latest_block-1, BLOCK_COL10_OFF))}{ROW_SALARY}")
-            ranges.append(f"{col_letter(block_col(latest_block, BLOCK_COL10_OFF))}{ROW_SALARY}")
-            ranges.append(f"{com_col}{ROW_COM_START}:{com_col}{ROW_COM_END}")
-            ranges.append(f"{col_letter(block_col(latest_block, BLOCK_COL7_OFF))}{ROW_BASE}")
-            ranges.append(f"{col_letter(block_col(latest_block, BLOCK_COL10_OFF))}{ROW_BASE}")
-            try:
-                results = _sheets_retry(ws_emp.batch_get, ranges)
-            except Exception:
-                # ชีทนี้มีคอลัมน์น้อยกว่า latest_block → ข้ามไป ใส่ 0
-                emp_data[emp_id] = {"f": 0.0, "g": 0.0, "i": 0.0,
-                                    "j": 0.0, "k": 0.0, "u": 0.0, "v": 0.0}
-                continue
-            ri = 0
-            f_val = g_val = 0.0
-            if latest_block >= 3:
-                f_val = safe_float(results[ri]); ri += 1
-            if latest_block >= 2:
-                g_val = safe_float(results[ri]); ri += 1
-            i_val = safe_float(results[ri]); ri += 1
-            com_rows = results[ri] if ri < len(results) else []; ri += 1
-            j_val = sum(
-                safe_float([[r[0]]] if r else []) for r in com_rows
-            ) if com_rows else 0.0
-            u_val = safe_float(results[ri]); ri += 1
-            v_val = safe_float(results[ri]); ri += 1
-            emp_data[emp_id] = {
-                "f": f_val, "g": g_val, "i": i_val,
-                "j": j_val, "k": i_val + j_val,
-                "u": u_val, "v": v_val,
-            }
+        # ── 6. สร้างสูตรอ้างอิงและเขียนลง Salary (50–90%) ─────────
+        _prog("📝 [50%] กำลังสร้างสูตรอ้างอิงชีทพนักงาน...")
 
-        # ── 7. เขียนลง Salary (90%) ─────────────────────────────
-        _prog("💾 [90%] กำลังบันทึกลงชีท Salary...")
+        def ref(sh_name, col_n, row_n):
+            """สร้างสูตร =IFERROR('SheetName'!ColRow, 0)"""
+            return f"=IFERROR('{sh_name}'!{col_letter(col_n)}{row_n},0)"
+
+        com_col_n = block_col(latest_block, BLOCK_COL10_OFF)
+        com_col_l = col_letter(com_col_n)
+
         upd = [
             {"range": "F2", "values": [[n2_lbl]]},
             {"range": "G2", "values": [[n1_lbl]]},
@@ -424,13 +390,24 @@ def _update_salary_summary(ss: "gspread.Spreadsheet", auto_month: int, auto_year
             if row_num < DATA_START_ROW:
                 continue
             emp_id = str(emp_id_raw).strip()
-            if not emp_id or emp_id not in emp_data or emp_id not in emp_ws_map:
+            if not emp_id or emp_id not in emp_ws_map:
                 continue
-            d = emp_data[emp_id]
+            sh = emp_ws_map[emp_id].title
+
+            f_formula = ref(sh, block_col(latest_block-2, BLOCK_COL10_OFF), ROW_SALARY) if latest_block >= 3 else "0"
+            g_formula = ref(sh, block_col(latest_block-1, BLOCK_COL10_OFF), ROW_SALARY) if latest_block >= 2 else "0"
+            i_formula = ref(sh, com_col_n, ROW_SALARY)
+            j_formula = f"=IFERROR(SUM('{sh}'!{com_col_l}{ROW_COM_START}:{com_col_l}{ROW_COM_END}),0)"
+            k_formula = f"=I{row_num}+J{row_num}"
+            u_formula = ref(sh, block_col(latest_block, BLOCK_COL7_OFF), ROW_BASE)
+            v_formula = ref(sh, com_col_n, ROW_BASE)
+
             upd.append({"range": f"F{row_num}:K{row_num}",
-                        "values": [[d["f"], d["g"], "", d["i"], d["j"], d["k"]]]})
+                        "values": [[f_formula, g_formula, "", i_formula, j_formula, k_formula]]})
             upd.append({"range": f"U{row_num}:V{row_num}",
-                        "values": [[d["u"], d["v"]]]})
+                        "values": [[u_formula, v_formula]]})
+
+        _prog("💾 [90%] กำลังบันทึกสูตรลงชีท Salary...")
         _sheets_retry(ws_sal.batch_update, upd, value_input_option="USER_ENTERED")
 
         if status_text:
