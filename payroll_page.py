@@ -275,179 +275,168 @@ def _get_or_create_history_sheet(ss: gspread.Spreadsheet) -> gspread.Worksheet:
         return hist
 
 
+# ── Main render function ─────────────────────────────────────────
 
-
-def _update_salary_summary(ss: gspread.Spreadsheet, auto_month: int, auto_year: int,
-                            status_text=None):
-    """
-    อัปเดตชีต Salary หลังบันทึกประวัติ
-    - หา block ล่าสุด (n) จาก row 56 col 10 ของแต่ละ block
-    - ดึงข้อมูล 3 เดือนย้อนหลัง (block n-2, n-1, n)
-    - เขียนสรุปลงชีต Salary
-
-    โครงสร้าง block:
-      Block 1 เริ่มที่ col AA (27), width = 13 (12 data + 1 gap)
-      Block n col 10 = 27 + (n-1)*13 + 9
-
-    Salary sheet columns (row 8+):
-      F  = รายรับสุทธิ block n-2 (2 เดือนก่อน)
-      G  = รายรับสุทธิ block n-1 (1 เดือนก่อน)
-      I  = รายรับสุทธิก่อนคอม block n (ปัจจุบัน)
-      J  = คอมมิชชั่น SUM(row58:63) block n
-      K  = รับสุทธิ = I + J
-      U  = เงินเดือน (col 7, row 44) block n
-      V  = ประกันสังคม (col 10, row 44) block n
-    """
-    BLOCK_FIRST_COL = 27        # col AA
-    BLOCK_WIDTH     = 13        # 12 data + 1 gap
-    ROW_SALARY      = 56        # รายรับสุทธิก่อนรวมคอม
-    ROW_COM_START   = 58        # คอมมิชชั่นเริ่ม
-    ROW_COM_END     = 63        # คอมมิชชั่นสิ้นสุด
-    ROW_BASE        = 44        # เงินเดือนพื้นฐาน + ประกันสังคม
-    BLOCK_COL7_OFF  = 6         # 0-based offset → col 7 ของ block
-    BLOCK_COL10_OFF = 9         # 0-based offset → col 10 ของ block
+def _update_salary_summary(ss: "gspread.Spreadsheet", auto_month: int, auto_year: int,
+                           status_text=None):
+    """อัปเดตสรุปเงินเดือนใน Salary sheet จากบล็อกประวัติล่าสุด"""
+    BLOCK_FIRST_COL = 27
+    BLOCK_WIDTH     = 13
+    ROW_SALARY      = 56
+    ROW_COM_START   = 58
+    ROW_COM_END     = 63
+    ROW_BASE        = 44
+    BLOCK_COL7_OFF  = 6
+    BLOCK_COL10_OFF = 9
     SALARY_SHEET    = "Salary"
-    DATA_START_ROW  = 8         # แถวแรกพนักงานในชีต Salary
+    DATA_START_ROW  = 8
 
-    def block_col(n: int, col_offset: int) -> int:
-        return BLOCK_FIRST_COL + (n - 1) * BLOCK_WIDTH + col_offset
+    def block_col(n, offset):
+        return BLOCK_FIRST_COL + (n - 1) * BLOCK_WIDTH + offset
 
-    if status_text:
-        status_text.info("📊 กำลังอัปเดตสรุปเงินเดือน...")
+    def safe_float(cell_2d):
+        try:
+            v = cell_2d[0][0] if cell_2d and cell_2d[0] else None
+            return float(str(v).replace(",", "")) if v not in (None, "") else 0.0
+        except Exception:
+            return 0.0
+
+    def _prog(msg):
+        if status_text:
+            status_text.info(msg)
 
     try:
-        # ── หา employee sheets ──────────────────────────────────────
-        all_ws     = _sheets_retry(ss.worksheets)
-        emp_sheets = {
-            ws.title.split("_")[0]: ws.title
-            for ws in all_ws
-            if re.match(r"^\d+_", ws.title)
-        }
-        if not emp_sheets:
-            if status_text: status_text.warning("⚠️ ไม่พบชีตพนักงาน")
-            return
-
-        # ── หา latest block จากชีตพนักงานชีตแรกที่มีข้อมูล ──────────
-        latest_block = 0
-        for emp_id, sh_name in emp_sheets.items():
-            try:
-                ws_emp = _sheets_retry(ss.worksheet, sh_name)
-                b = 1
-                while b <= 120:   # รองรับสูงสุด 120 เดือน (~10 ปี)
-                    c10 = block_col(b, BLOCK_COL10_OFF)
-                    val = ws_emp.cell(ROW_SALARY, c10).value
-                    if val is None or str(val).strip() == "":
-                        break
-                    b += 1
-                latest_block = b - 1
-                if latest_block > 0:
-                    break
-            except Exception:
-                continue
-
-        if latest_block < 1:
+        # ── 1. หาชีทพนักงาน (10%) ───────────────────────────────
+        _prog("📋 [10%] กำลังค้นหาชีทพนักงาน...")
+        all_ws = _sheets_retry(ss.worksheets)
+        # เก็บ ws object ไว้เลย ไม่ต้องเรียก ss.worksheet() ซ้ำ
+        emp_ws_map = {ws.title.split("_")[0]: ws
+                      for ws in all_ws if re.match(r"^\d+_", ws.title)}
+        if not emp_ws_map:
             if status_text:
-                status_text.warning("⚠️ ไม่พบ block ประวัติ — ข้ามการสรุปเงินเดือน")
+                status_text.warning("⚠️ ไม่พบชีทพนักงาน")
             return
 
-        # ── ชื่อเดือนย่อสำหรับ F2, G2, I2 ──────────────────────────
-        def month_abbr_for_block(n: int) -> str:
-            delta = latest_block - n
-            mo    = auto_month - delta
-            yr    = auto_year
+        # ── 2. หาบล็อกล่าสุด (20%) ──────────────────────────────
+        _prog("🔍 [20%] กำลังหาบล็อกข้อมูลล่าสุด...")
+        first_ws = list(emp_ws_map.values())[0]
+        row56 = _sheets_retry(first_ws.row_values, ROW_SALARY)
+        latest_block = 0
+        for b in range(1, 121):
+            idx0 = block_col(b, BLOCK_COL10_OFF) - 1
+            if idx0 >= len(row56) or not str(row56[idx0]).strip():
+                latest_block = b - 1
+                break
+        else:
+            latest_block = 120
+
+        if latest_block == 0:
+            if status_text:
+                status_text.warning("⚠️ ไม่พบข้อมูลบล็อกในชีทพนักงาน (row 56 ว่าง)")
+            return
+
+        # ── 3. Label เดือน ──────────────────────────────────────
+        def month_label(block_n):
+            delta = latest_block - block_n
+            mo = auto_month - delta
+            yr = auto_year
             while mo < 1:
-                mo += 12
-                yr -= 1
+                mo += 12; yr -= 1
             return MONTH_TH[mo] if 1 <= mo <= 12 else str(mo)
 
-        n2_label = month_abbr_for_block(latest_block - 2) if latest_block >= 3 else ""
-        n1_label = month_abbr_for_block(latest_block - 1) if latest_block >= 2 else ""
-        n0_label = month_abbr_for_block(latest_block)
+        n2_lbl = month_label(latest_block - 2) if latest_block >= 3 else ""
+        n1_lbl = month_label(latest_block - 1) if latest_block >= 2 else ""
+        n0_lbl = month_label(latest_block)
 
-        # ── อ่านข้อมูลแต่ละพนักงาน ──────────────────────────────────
-        emp_data: dict = {}
-
-        for emp_id, sh_name in emp_sheets.items():
-            try:
-                ws_emp = _sheets_retry(ss.worksheet, sh_name)
-
-                def _cell(row: int, col: int) -> float:
-                    try:
-                        v = ws_emp.cell(row, col).value
-                        return float(v) if v not in (None, "") else 0.0
-                    except Exception:
-                        return 0.0
-
-                f_val = _cell(ROW_SALARY, block_col(latest_block - 2, BLOCK_COL10_OFF)) \
-                        if latest_block >= 3 else 0.0
-                g_val = _cell(ROW_SALARY, block_col(latest_block - 1, BLOCK_COL10_OFF)) \
-                        if latest_block >= 2 else 0.0
-                i_val = _cell(ROW_SALARY, block_col(latest_block,     BLOCK_COL10_OFF))
-                j_val = sum(
-                    _cell(r, block_col(latest_block, BLOCK_COL10_OFF))
-                    for r in range(ROW_COM_START, ROW_COM_END + 1)
-                )
-                k_val = i_val + j_val
-                u_val = _cell(ROW_BASE, block_col(latest_block, BLOCK_COL7_OFF))
-                v_val = _cell(ROW_BASE, block_col(latest_block, BLOCK_COL10_OFF))
-
-                emp_data[emp_id] = {
-                    "f": f_val, "g": g_val, "i": i_val,
-                    "j": j_val, "k": k_val, "u": u_val, "v": v_val,
-                }
-            except Exception:
-                continue
-
-        # ── เปิดชีต Salary ──────────────────────────────────────────
-        try:
-            ws_sal = _sheets_retry(ss.worksheet, SALARY_SHEET)
-        except gspread.WorksheetNotFound:
-            if status_text: status_text.warning(f"⚠️ ไม่พบชีต '{SALARY_SHEET}'")
+        # ── 4. Salary sheet — หา last row (30%) ─────────────────
+        _prog("📄 [30%] กำลังเปิดชีท Salary...")
+        ws_sal = _sheets_retry(ss.worksheet, SALARY_SHEET)
+        sal_col_a = _sheets_retry(ws_sal.col_values, 1)
+        last_emp_row = DATA_START_ROW - 1
+        for ri in range(len(sal_col_a) - 1, -1, -1):
+            if sal_col_a[ri] and str(sal_col_a[ri]).strip():
+                last_emp_row = ri + 1
+                break
+        if last_emp_row < DATA_START_ROW:
+            if status_text:
+                status_text.warning("⚠️ ไม่พบรหัสพนักงานในชีท Salary (column A)")
             return
 
-        sal_ids = _sheets_retry(ws_sal.col_values, 1)   # col A ทั้งหมด
+        # ── 5. ล้างข้อมูลเก่า (40%) ─────────────────────────────
+        _prog(f"🗑️ [40%] กำลังล้างข้อมูลเก่า Row 8–{last_emp_row}...")
+        _sheets_retry(ws_sal.batch_clear, [
+            f"F{DATA_START_ROW}:G{last_emp_row}",
+            f"I{DATA_START_ROW}:K{last_emp_row}",
+            f"U{DATA_START_ROW}:V{last_emp_row}",
+        ])
 
-        # ── สร้าง batch update ──────────────────────────────────────
-        upd = []
+        # ── 6. อ่านข้อมูลพนักงานแบบ batch (40–80%) ──────────────
+        emp_data = {}
+        com_col = col_letter(block_col(latest_block, BLOCK_COL10_OFF))
+        total_emp = len(emp_ws_map)
+        for emp_idx, (emp_id, ws_emp) in enumerate(emp_ws_map.items()):
+            pct = 40 + int(40 * emp_idx / total_emp)
+            _prog(f"📊 [{pct}%] อ่านข้อมูล {emp_idx+1}/{total_emp}: {ws_emp.title}")
+            ranges = []
+            if latest_block >= 3:
+                ranges.append(f"{col_letter(block_col(latest_block-2, BLOCK_COL10_OFF))}{ROW_SALARY}")
+            if latest_block >= 2:
+                ranges.append(f"{col_letter(block_col(latest_block-1, BLOCK_COL10_OFF))}{ROW_SALARY}")
+            ranges.append(f"{col_letter(block_col(latest_block, BLOCK_COL10_OFF))}{ROW_SALARY}")
+            ranges.append(f"{com_col}{ROW_COM_START}:{com_col}{ROW_COM_END}")
+            ranges.append(f"{col_letter(block_col(latest_block, BLOCK_COL7_OFF))}{ROW_BASE}")
+            ranges.append(f"{col_letter(block_col(latest_block, BLOCK_COL10_OFF))}{ROW_BASE}")
+            results = _sheets_retry(ws_emp.batch_get, ranges)
+            ri = 0
+            f_val = g_val = 0.0
+            if latest_block >= 3:
+                f_val = safe_float(results[ri]); ri += 1
+            if latest_block >= 2:
+                g_val = safe_float(results[ri]); ri += 1
+            i_val = safe_float(results[ri]); ri += 1
+            com_rows = results[ri] if ri < len(results) else []; ri += 1
+            j_val = sum(
+                safe_float([[r[0]]] if r else []) for r in com_rows
+            ) if com_rows else 0.0
+            u_val = safe_float(results[ri]); ri += 1
+            v_val = safe_float(results[ri]); ri += 1
+            emp_data[emp_id] = {
+                "f": f_val, "g": g_val, "i": i_val,
+                "j": j_val, "k": i_val + j_val,
+                "u": u_val, "v": v_val,
+            }
 
-        # Row 1: B1:E1 = สรุปเงินเดือน (เดือนปัจจุบัน)
-        upd.append({"range": "B1:E1",
-                    "values": [["สรุปเงินเดือน (เดือนปัจจุบัน)", "", "", ""]]})
-
-        # Row 2: F2, G2, I2 = ชื่อเดือนย่อ
-        upd.append({"range": "F2", "values": [[n2_label]]})
-        upd.append({"range": "G2", "values": [[n1_label]]})
-        upd.append({"range": "I2", "values": [[n0_label]]})
-
-        # Row 8+: ข้อมูลพนักงาน
-        for row_idx, emp_id_raw in enumerate(sal_ids):
-            if row_idx + 1 < DATA_START_ROW:
+        # ── 7. เขียนลง Salary (90%) ─────────────────────────────
+        _prog("💾 [90%] กำลังบันทึกลงชีท Salary...")
+        upd = [
+            {"range": "F2", "values": [[n2_lbl]]},
+            {"range": "G2", "values": [[n1_lbl]]},
+            {"range": "I2", "values": [[n0_lbl]]},
+        ]
+        for ri, emp_id_raw in enumerate(sal_col_a):
+            row_num = ri + 1
+            if row_num < DATA_START_ROW:
                 continue
             emp_id = str(emp_id_raw).strip()
-            if not emp_id or emp_id not in emp_data:
+            if not emp_id or emp_id not in emp_data or emp_id not in emp_ws_map:
                 continue
-            row_num = row_idx + 1
-            d       = emp_data[emp_id]
-            # F, G, (H ว่าง), I, J, K
+            d = emp_data[emp_id]
             upd.append({"range": f"F{row_num}:K{row_num}",
                         "values": [[d["f"], d["g"], "", d["i"], d["j"], d["k"]]]})
-            # U, V
             upd.append({"range": f"U{row_num}:V{row_num}",
                         "values": [[d["u"], d["v"]]]})
-
         _sheets_retry(ws_sal.batch_update, upd, value_input_option="USER_ENTERED")
 
         if status_text:
             status_text.success(
-                f"✅ อัปเดตสรุปเงินเดือน {len(emp_data)} คน เรียบร้อยค่ะ"
+                f"✅ [100%] อัปเดตสรุปเงินเดือนเรียบร้อยค่ะ "
+                f"(บล็อก {latest_block} | {n2_lbl} / {n1_lbl} / {n0_lbl})"
             )
 
-    except Exception as e:
+    except Exception as exc:
         if status_text:
-            status_text.error(f"❌ อัปเดต Salary ไม่สำเร็จ: {e}")
+            status_text.error(f"❌ อัปเดตสรุปเงินเดือนไม่สำเร็จ: {exc}")
 
-
-# ── Main render function ─────────────────────────────────────────
 
 def render_payroll_page(gc: gspread.Client,
                         sheet_id: str,
@@ -537,10 +526,9 @@ def render_payroll_page(gc: gspread.Client,
                         status_text.empty()
                         if fail_count == 0:
                             st.success(f"✅ บันทึกประวัติครบ {success_count} Sheet ค่ะ")
-                            # ── อัปเดตสรุปเงินเดือน ──────────────────────────────────
                             _sal_status = st.empty()
-                            _update_salary_summary(ss, auto_month, auto_year,
-                                                   status_text=_sal_status)
+                            _sal_status.info("📊 กำลังอัปเดตสรุปเงินเดือน...")
+                            _update_salary_summary(ss, auto_month, auto_year, status_text=_sal_status)
                         else:
                             st.warning(f"⚠️ เสร็จ {success_count} / ล้มเหลว {fail_count} Sheet")
                         if errors:
