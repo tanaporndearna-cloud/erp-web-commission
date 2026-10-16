@@ -119,7 +119,7 @@ def build_formulas(emp_name: str, block_n: int) -> dict:
         # ── Header info ─────────────────────────────────────────────────────
         "C3":  ib(6, 2),      # รหัสพนักงาน
         "C4":  ib(12, 3),     # ตำแหน่ง
-        "J3":  ib(7, 2),      # ชื่อสกุล
+        "L3":  ib(7, 2),      # ชื่อสกุล
         # L2: VLOOKUP เลขบัญชีจาก Salary sheet (match รหัสใน col A)
         "L2":  (f"=IFERROR(VLOOKUP(C3,"
                 f"IMPORTRANGE(\"{pid}\",\"Salary!A:Q\"),17,0),\"\")"),
