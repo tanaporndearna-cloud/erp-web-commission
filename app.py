@@ -308,15 +308,42 @@ except ImportError:
 # ===== Payslip Section =====
 st.divider()
 st.subheader("🧾 สร้างสลีปเงินเดือน")
-st.caption("สร้างไฟล์ Google Sheets สลีปเงินเดือนรายเดือน พร้อมสูตร IMPORTRANGE อัตโนมัติ")
+st.caption("เติมข้อมูลลงในไฟล์ Slip ที่สร้างไว้แล้ว พร้อมสูตร IMPORTRANGE อัตโนมัติ")
+
+# ── คำแนะนำวิธีใช้ ──────────────────────────────────────────────────────────
+with st.expander("📋 วิธีใช้ก่อนกด (คลิกเพื่อดู)", expanded=False):
+    st.markdown("""
+**ขั้นตอน (ทำครั้งแรกของแต่ละเดือน):**
+
+1. เปิด Google Drive → หา **ไฟล์ Template Slip**
+2. คลิกขวา → **Copy** (ทำสำเนา)
+3. ตั้งชื่อไฟล์ใหม่ เช่น `Slip_ตุลาคม_2569`
+4. Share ไฟล์นั้นให้ Service Account:
+   - คลิกขวาที่ไฟล์ → **Share**
+   - เพิ่ม email: `erp-streamlit@erp-commission.iam.gserviceaccount.com`
+   - สิทธิ์: **Editor**
+5. เปิดไฟล์ → Copy **File ID** จาก URL
+   - URL ตัวอย่าง: `https://docs.google.com/spreadsheets/d/`**`1ABC...xyz`**`/edit`
+   - เอาเฉพาะส่วนที่อยู่ระหว่าง `/d/` และ `/edit`
+6. วาง ID ด้านล่างแล้วกดปุ่ม
+""")
+
+# ── Input File ID ────────────────────────────────────────────────────────────
+target_file_id = st.text_input(
+    "📋 วาง File ID ของไฟล์ Slip ที่สร้างไว้",
+    placeholder="เช่น 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms",
+    help="ID ของไฟล์ Google Sheets ที่ copy จาก Template แล้ว share ให้ Service Account แล้ว",
+)
 
 slip_btn = st.button(
-    "🧾 สร้างสลีปเงินเดือน",
+    "🧾 เติมข้อมูล Slip",
     type="primary",
     use_container_width=True,
+    disabled=not bool(target_file_id and target_file_id.strip()),
 )
 
 if slip_btn:
+    file_id_clean = target_file_id.strip()
     try:
         from googleapiclient.discovery import build as gapi_build
         from google.oauth2.service_account import Credentials as SACredentials
@@ -327,7 +354,6 @@ if slip_btn:
         ]
         creds_dict  = dict(st.secrets["gcp_service_account"])
         slip_creds  = SACredentials.from_service_account_info(creds_dict, scopes=SLIP_SCOPES)
-        slip_drive  = gapi_build("drive",  "v3", credentials=slip_creds)
         slip_sheets = gapi_build("sheets", "v4", credentials=slip_creds)
         slip_gc     = get_gspread_client()
 
@@ -341,16 +367,16 @@ if slip_btn:
             if pct is not None:
                 progress_bar.progress(min(pct, 100))
 
-        with st.spinner("กำลังสร้างสลีป..."):
+        with st.spinner("กำลังเติมข้อมูล Slip..."):
             file_id, file_name = run_generate_payslips(
                 gc=slip_gc,
-                drive_svc=slip_drive,
                 sheets_svc=slip_sheets,
+                target_file_id=file_id_clean,
                 progress_cb=slip_progress,
             )
 
         progress_bar.progress(100)
-        status_slip.success(f"✅ สร้างสลีปเสร็จแล้วค่ะ! — {file_name}")
+        status_slip.success(f"✅ เติมข้อมูล Slip เสร็จแล้วค่ะ! — {file_name}")
         st.markdown(
             f"[📄 เปิดไฟล์ {file_name}]"
             f"(https://docs.google.com/spreadsheets/d/{file_id})"
@@ -361,6 +387,8 @@ if slip_btn:
             "📝 จากนั้นกรอก **M8 (เงินเดือน วัน)** ทีละชีตตามจริงค่ะ"
         )
 
+    except ValueError as e:
+        st.error(f"❌ {e}")
     except Exception as e:
         st.error(f"❌ เกิดข้อผิดพลาด: {e}")
         st.exception(e)
