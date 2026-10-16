@@ -229,17 +229,18 @@ def build_formulas(emp_name: str, block_n: int) -> dict:
     }
 
 # ── CORE FUNCTION (ใช้ได้ทั้ง standalone และ Streamlit) ──────────────────────
-def run_generate_payslips(gc, sheets_svc, target_file_id, month=None, progress_cb=None) -> tuple:
+def run_generate_payslips(gc, sheets_svc, target_file_id,
+                          template_sheet_id=None, month=None, progress_cb=None) -> tuple:
     """
     เติมชีตพนักงานลงในไฟล์ Google Sheets ที่ผู้ใช้สร้างไว้แล้ว
 
     Parameters:
-        gc             — gspread client (authorized)
-        sheets_svc     — Google Sheets API service
-        target_file_id — ID ของไฟล์ Google Sheets ที่ผู้ใช้สร้างเอง
-                         (copy จาก Template ใน Drive แล้ว paste ID มาที่นี่)
-        month          — เดือนที่เลือกใน sidebar (int 1-12); ถ้า None จะ auto-detect
-        progress_cb    — callback(msg: str, pct: int | None) สำหรับแสดง progress
+        gc                 — gspread client (authorized)
+        sheets_svc         — Google Sheets API service
+        target_file_id     — ID ของไฟล์ Slip ที่ผู้ใช้สร้างเอง
+        template_sheet_id  — ID ของไฟล์ Template (กรอกในหน้าเว็บ); ถ้าไม่ส่งใช้ค่า TEMPLATE_SHEET_ID
+        month              — เดือนที่เลือกใน sidebar (int 1-12); ถ้า None จะ auto-detect
+        progress_cb        — callback(msg: str, pct: int | None) สำหรับแสดง progress
 
     Returns:
         (file_id: str, file_name: str)
@@ -248,6 +249,9 @@ def run_generate_payslips(gc, sheets_svc, target_file_id, month=None, progress_c
         print(msg)
         if progress_cb:
             progress_cb(msg, pct)
+
+    # ใช้ template_sheet_id ที่รับมาจากหน้าเว็บ ถ้าไม่มีใช้ค่า default
+    tmpl_id = (template_sheet_id or "").strip() or TEMPLATE_SHEET_ID
 
     # ── เปิด Payroll Sheet ────────────────────────────────────────────────────
     log("กำลังอ่านข้อมูลจาก Payroll Sheet...", 5)
@@ -301,12 +305,12 @@ def run_generate_payslips(gc, sheets_svc, target_file_id, month=None, progress_c
     # ── เตรียม template tab ────────────────────────────────────────────────────
     # ดึง template tab จาก Template file แล้ว copy เข้าไฟล์ target
     log("กำลัง copy template sheet...", 25)
-    template_wb      = gc.open_by_key(TEMPLATE_SHEET_ID)
+    template_wb      = gc.open_by_key(tmpl_id)
     template_tab_src = template_wb.worksheet(TEMPLATE_TAB)
     template_gid_src = template_tab_src.id
 
     dup = sheets_svc.spreadsheets().sheets().copyTo(
-        spreadsheetId=TEMPLATE_SHEET_ID,
+        spreadsheetId=tmpl_id,
         sheetId=template_gid_src,
         body={"destinationSpreadsheetId": target_file_id},
     ).execute()
