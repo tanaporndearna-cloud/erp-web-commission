@@ -16,6 +16,23 @@ import time
 import gspread
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+# ── RETRY HELPER ──────────────────────────────────────────────────────────────
+def api_call_with_retry(fn, max_retries=5):
+    """เรียก API พร้อม retry อัตโนมัติเมื่อเจอ 429 Rate Limit"""
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except (HttpError, gspread.exceptions.APIError) as e:
+            err_str = str(e)
+            if "429" in err_str or "RATE_LIMIT" in err_str or "Quota exceeded" in err_str:
+                wait = 15 * (attempt + 1)  # 15s, 30s, 45s, 60s, 75s
+                print(f"  ⏳ Rate limit — รอ {wait}s แล้วลองใหม่ (ครั้งที่ {attempt+1}/{max_retries})")
+                time.sleep(wait)
+            else:
+                raise
+    raise RuntimeError("เกิน retry limit สำหรับ API call")
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 CREDENTIALS_FILE  = "credentials.json"          # ← ใช้เฉพาะตอนรันแบบ standalone
@@ -255,30 +272,30 @@ def run_generate_payslips(gc, sheets_svc, target_file_id, progress_cb=None) -> t
         pct = 30 + int((i / total) * 60)
         log(f"[{i+1}/{total}] สร้างชีต {emp_name}...", pct)
 
-        # Copy template tab
-        dup = sheets_svc.spreadsheets().sheets().copyTo(
+        # Copy template tab (retry on rate limit)
+        dup = api_call_with_retry(lambda: sheets_svc.spreadsheets().sheets().copyTo(
             spreadsheetId=target_file_id,
             sheetId=template_gid,
             body={"destinationSpreadsheetId": target_file_id},
-        ).execute()
+        ).execute())
         new_gid = dup["sheetId"]
 
-        # Rename
-        slip_wb.batch_update({"requests": [{
+        # Rename (retry on rate limit)
+        api_call_with_retry(lambda: slip_wb.batch_update({"requests": [{
             "updateSheetProperties": {
                 "properties": {"sheetId": new_gid, "title": emp_name},
                 "fields": "title",
             }
-        }]})
+        }]}))
 
-        # Fill formulas
+        # Fill formulas (retry on rate limit)
         emp_ws   = slip_wb.worksheet(emp_name)
         formulas = build_formulas(emp_name, latest_block)
         data     = [{"range": cell, "values": [[val]]}
                     for cell, val in formulas.items()]
-        emp_ws.batch_update(data, value_input_option="USER_ENTERED")
+        api_call_with_retry(lambda: emp_ws.batch_update(data, value_input_option="USER_ENTERED"))
 
-        time.sleep(1.2)   # avoid Google API rate limit
+        time.sleep(2.5)   # เพิ่ม delay ป้องกัน rate limit
 
     # ── ลบ Template Tab ออก ─────────────────────────────────────────────────
     log("กำลังลบ template tab...", 92)
