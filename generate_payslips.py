@@ -20,7 +20,7 @@ from googleapiclient.discovery import build
 CREDENTIALS_FILE  = "credentials.json"          # ← ใช้เฉพาะตอนรันแบบ standalone
 PAYROLL_SHEET_ID  = "1oWaO8U1nNItgozvdSAcfN6QC-Ih78d0H9n5mJRfK6W4"
 TEMPLATE_SHEET_ID = "1H44tl2BHMBIO-pYpxTngVKrullpfeWpuYeUZHKv8TBw"
-OUTPUT_FOLDER_ID  = "16IFsEN8w7idA9T7hfcHEXVva6FUSUuYH"
+OUTPUT_FOLDER_ID  = "13E-RIMy7hZBZ_tCm136gBZiaHBPm2sv4"
 TEMPLATE_TAB      = "ชีต1"
 SALARY_SHEET      = "Salary"
 OWNER_EMAIL       = "ai02.trc@gmail.com"        # ← เจ้าของไฟล์จริง (รับ ownership)
@@ -207,6 +207,7 @@ def run_generate_payslips(gc, drive_svc, sheets_svc, progress_cb=None) -> tuple:
             "parents": [OUTPUT_FOLDER_ID],
         },
         fields="id",
+        supportsAllDrives=True,
     ).execute()
     new_file_id = new_file["id"]
     log(f"สร้างไฟล์: {slip_filename}", 23)
