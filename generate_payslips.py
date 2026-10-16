@@ -304,8 +304,22 @@ def run_generate_payslips(gc, sheets_svc, target_file_id,
 
     # ── เตรียม template tab ────────────────────────────────────────────────────
     # ดึง template tab จาก Template file แล้ว copy เข้าไฟล์ target
-    log("กำลัง copy template sheet...", 25)
-    template_wb      = gc.open_by_key(tmpl_id)
+    log(f"กำลัง copy template sheet (tmpl_id={tmpl_id[:20]}...)...", 25)
+
+    # ถ้า template == target ใช้ slip_wb ที่เปิดไว้แล้ว (ป้องกัน 404 redundant)
+    if tmpl_id.strip() == target_file_id.strip():
+        template_wb = slip_wb
+        log("Template อยู่ไฟล์เดียวกับ Slip — ใช้ไฟล์ที่เปิดอยู่", 26)
+    else:
+        try:
+            template_wb = gc.open_by_key(tmpl_id)
+        except Exception as e:
+            raise ValueError(
+                f"ไม่สามารถเปิดไฟล์ Template ได้ (ID: {tmpl_id})\n"
+                f"โปรดตรวจสอบ: 1) File ID ถูกต้อง  2) Share ไฟล์ให้ erp-streamlit@erp-commission.iam.gserviceaccount.com\n"
+                f"Error: {e}"
+            )
+
     template_tab_src = template_wb.worksheet(TEMPLATE_TAB)
     template_gid_src = template_tab_src.id
 
