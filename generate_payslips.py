@@ -198,18 +198,21 @@ def run_generate_payslips(gc, drive_svc, sheets_svc, progress_cb=None) -> tuple:
                   if re.match(r"^\d+_.+", ws.title)]
     log(f"พบพนักงาน {len(emp_sheets)} คน", 15)
 
-    # ── Copy Template → ไฟล์ใหม่ใน Output Folder ─────────────────────────
+    # ── สร้างไฟล์ว่างก่อน (ไม่ copy เพราะ Service Account มี quota = 0) ──────
     log("กำลังสร้างไฟล์ Slip ใหม่ใน Google Drive...", 20)
-    new_file = drive_svc.files().copy(
-        fileId=TEMPLATE_SHEET_ID,
-        body={"name": slip_filename, "parents": [OUTPUT_FOLDER_ID]},
+    new_file = drive_svc.files().create(
+        body={
+            "name": slip_filename,
+            "mimeType": "application/vnd.google-apps.spreadsheet",
+            "parents": [OUTPUT_FOLDER_ID],
+        },
         fields="id",
     ).execute()
     new_file_id = new_file["id"]
-    log(f"สร้างไฟล์: {slip_filename}", 25)
+    log(f"สร้างไฟล์: {slip_filename}", 23)
 
-    # ── Transfer ownership → เจ้าของจริง (ไม่งั้น Service Account ใช้ quota ตัวเอง) ──
-    log("กำลัง transfer ownership...", 27)
+    # ── Transfer ownership ทันที ก่อนเพิ่ม content ใดๆ ───────────────────────
+    log("กำลัง transfer ownership...", 25)
     try:
         drive_svc.permissions().create(
             fileId=new_file_id,
@@ -220,11 +223,39 @@ def run_generate_payslips(gc, drive_svc, sheets_svc, progress_cb=None) -> tuple:
             },
             transferOwnership=True,
         ).execute()
+        log("Transfer ownership สำเร็จ ✅", 27)
     except Exception as e:
-        # บาง environment ไม่อนุญาต transferOwnership — ข้ามไปได้ค่ะ
-        log(f"⚠️ transfer ownership ไม่สำเร็จ (ข้ามได้): {e}", 27)
+        log(f"⚠️ transfer ownership ไม่สำเร็จ: {e}", 27)
 
-    slip_wb      = gc.open_by_key(new_file_id)
+    # ── Copy template tab จาก Template file เข้าไฟล์ใหม่ ───────────────────
+    log("กำลัง copy template sheet...", 28)
+    template_wb      = gc.open_by_key(TEMPLATE_SHEET_ID)
+    template_tab_src = template_wb.worksheet(TEMPLATE_TAB)
+    template_gid_src = template_tab_src.id
+
+    dup = sheets_svc.spreadsheets().sheets().copyTo(
+        spreadsheetId=TEMPLATE_SHEET_ID,
+        sheetId=template_gid_src,
+        body={"destinationSpreadsheetId": new_file_id},
+    ).execute()
+    copied_gid = dup["sheetId"]
+
+    # Rename copied tab → TEMPLATE_TAB + ลบ Sheet1 default ที่ติดมา
+    slip_wb        = gc.open_by_key(new_file_id)
+    default_sheets = slip_wb.worksheets()
+    requests_batch = [
+        {
+            "updateSheetProperties": {
+                "properties": {"sheetId": copied_gid, "title": TEMPLATE_TAB},
+                "fields": "title",
+            }
+        }
+    ]
+    for ws in default_sheets:
+        if ws.id != copied_gid:
+            requests_batch.append({"deleteSheet": {"sheetId": ws.id}})
+    slip_wb.batch_update({"requests": requests_batch})
+
     template_tab = slip_wb.worksheet(TEMPLATE_TAB)
     template_gid = template_tab.id
 
