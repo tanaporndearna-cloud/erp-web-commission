@@ -38,7 +38,7 @@ def api_call_with_retry(fn, max_retries=5):
 CREDENTIALS_FILE  = "credentials.json"          # ← ใช้เฉพาะตอนรันแบบ standalone
 PAYROLL_SHEET_ID  = "1oWaO8U1nNItgozvdSAcfN6QC-Ih78d0H9n5mJRfK6W4"
 TEMPLATE_SHEET_ID = "1H44tl2BHMBIO-pYpxTngVKrullpfeWpuYeUZHKv8TBw"
-TEMPLATE_TAB      = "ชีต1"
+TEMPLATE_TAB      = "Template"
 SALARY_SHEET      = "Salary"
 
 # Block structure (เหมือน payroll_page_updated.py)
