@@ -254,35 +254,37 @@ def run_generate_payslips(gc, sheets_svc, target_file_id, month=None, progress_c
     payroll_wb  = gc.open_by_key(PAYROLL_SHEET_ID)
     salary_ws   = payroll_wb.worksheet(SALARY_SHEET)
 
-    latest_block = detect_latest_block(salary_ws)
-    log(f"Block ปัจจุบัน (block สุดท้ายที่มีข้อมูล): {latest_block}", 8)
-
-    # ดึงชื่อเดือน/ปีจาก col 12 แถว 1 ของ block ที่เลือก
-    bm_col = block_col_letter(latest_block, 12)
-    bm_val = salary_ws.acell(f"{bm_col}1").value or ""
-    # fallback B1
-    if not bm_val.strip():
-        month_name, year = get_month_year_from_salary(salary_ws)
-    else:
-        # แยก "ตุลาคม 2569" หรือ "10/2569"
-        m = re.match(r"^(\d{1,2})[/\-](\d+)", bm_val.strip())
-        if m:
-            month_num = int(m.group(1))
-            year      = m.group(2)
-            month_name = next((k for k, v in _THAI_MONTHS.items() if v == month_num), str(month_num))
-        else:
-            parts = bm_val.strip().split()
-            month_name = parts[0] if parts else "ไม่ทราบ"
-            year       = parts[1] if len(parts) > 1 else "2569"
-
-    slip_filename = f"Slip_{month_name}_{year}"
-    log(f"Block: {latest_block} | {month_name} {year}", 10)
-
     # ── รายชื่อชีตพนักงาน (pattern: รหัส_ชื่อ) ────────────────────────────
     all_sheets = payroll_wb.worksheets()
     emp_sheets = [ws.title for ws in all_sheets
                   if re.match(r"^\d+_.+", ws.title)]
     log(f"พบพนักงาน {len(emp_sheets)} คน", 15)
+
+    # ── หา block ปัจจุบันจากชีตพนักงานคนแรก (Salary มีแค่ 26 col ไม่มี block) ──
+    if not emp_sheets:
+        raise ValueError("ไม่พบชีตพนักงาน (รูปแบบ รหัส_ชื่อ) ใน Payroll Sheet")
+    first_emp_ws = payroll_wb.worksheet(emp_sheets[0])
+    latest_block = detect_latest_block(first_emp_ws)
+    log(f"Block ปัจจุบัน (block สุดท้ายที่มีข้อมูล): {latest_block}", 8)
+
+    # ดึงชื่อเดือน/ปีจาก col 12 แถว 1 ของ block ที่เลือก
+    bm_col = block_col_letter(latest_block, 12)
+    bm_val = first_emp_ws.acell(f"{bm_col}1").value or ""
+    if not bm_val.strip():
+        month_name, year = get_month_year_from_salary(salary_ws)
+    else:
+        m = re.match(r"^(\d{1,2})[/\-](\d+)", bm_val.strip())
+        if m:
+            month_num  = int(m.group(1))
+            year       = m.group(2)
+            month_name = next((k for k, v in _THAI_MONTHS.items() if v == month_num), str(month_num))
+        else:
+            parts      = bm_val.strip().split()
+            month_name = parts[0] if parts else "ไม่ทราบ"
+            year       = parts[1] if len(parts) > 1 else "2569"
+
+    slip_filename = f"Slip_{month_name}_{year}"
+    log(f"Block: {latest_block} | {month_name} {year}", 10)
 
     # ── เปิดไฟล์ที่ผู้ใช้สร้างไว้แล้ว ────────────────────────────────────────
     log("กำลังเปิดไฟล์ Slip ที่สร้างไว้...", 20)
