@@ -250,8 +250,9 @@ def run_generate_payslips(gc, sheets_svc, target_file_id,
         if progress_cb:
             progress_cb(msg, pct)
 
-    # ใช้ template_sheet_id ที่รับมาจากหน้าเว็บ ถ้าไม่มีใช้ค่า default
-    tmpl_id = (template_sheet_id or "").strip() or TEMPLATE_SHEET_ID
+    # ถ้าไม่ได้ส่ง template_sheet_id มา ใช้ target_file_id แทน (ไฟล์เดียวกัน)
+    # fallback สุดท้ายถึงจะใช้ TEMPLATE_SHEET_ID (hardcode)
+    tmpl_id = (template_sheet_id or "").strip() or target_file_id or TEMPLATE_SHEET_ID
 
     # ── เปิด Payroll Sheet ────────────────────────────────────────────────────
     log("กำลังอ่านข้อมูลจาก Payroll Sheet...", 5)
