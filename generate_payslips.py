@@ -179,7 +179,7 @@ def build_formulas(emp_name: str, block_n: int) -> dict:
     }
 
 # ── CORE FUNCTION (ใช้ได้ทั้ง standalone และ Streamlit) ──────────────────────
-def run_generate_payslips(gc, sheets_svc, target_file_id, progress_cb=None) -> tuple:
+def run_generate_payslips(gc, sheets_svc, target_file_id, month=None, progress_cb=None) -> tuple:
     """
     เติมชีตพนักงานลงในไฟล์ Google Sheets ที่ผู้ใช้สร้างไว้แล้ว
 
@@ -188,6 +188,7 @@ def run_generate_payslips(gc, sheets_svc, target_file_id, progress_cb=None) -> t
         sheets_svc     — Google Sheets API service
         target_file_id — ID ของไฟล์ Google Sheets ที่ผู้ใช้สร้างเอง
                          (copy จาก Template ใน Drive แล้ว paste ID มาที่นี่)
+        month          — เดือนที่เลือกใน sidebar (int 1-12); ถ้า None จะ auto-detect
         progress_cb    — callback(msg: str, pct: int | None) สำหรับแสดง progress
 
     Returns:
@@ -203,11 +204,11 @@ def run_generate_payslips(gc, sheets_svc, target_file_id, progress_cb=None) -> t
     payroll_wb  = gc.open_by_key(PAYROLL_SHEET_ID)
     salary_ws   = payroll_wb.worksheet(SALARY_SHEET)
 
-    latest_block          = detect_latest_block(salary_ws)
+    latest_block          = month if month else detect_latest_block(salary_ws)
     month_name, year      = get_month_year_from_salary(salary_ws)
     slip_filename         = f"Slip_{month_name}_{year}"
 
-    log(f"Block ล่าสุด: {latest_block} | เดือน: {month_name} {year}", 10)
+    log(f"Block: {latest_block} (เดือน {month if month else 'auto-detect'}) | {month_name} {year}", 10)
 
     # ── รายชื่อชีตพนักงาน (pattern: รหัส_ชื่อ) ────────────────────────────
     all_sheets = payroll_wb.worksheets()
