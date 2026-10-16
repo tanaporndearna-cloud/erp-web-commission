@@ -74,13 +74,35 @@ def imp_block(payroll_id: str, sheet_name: str, block_n: int,
     """IMPORTRANGE จาก block col (1-indexed) และ row ที่กำหนด"""
     return importrange(payroll_id, sheet_name, block_col_letter(block_n, col_1), row)
 
+_THAI_MONTHS = {
+    "มกราคม": 1, "กุมภาพันธ์": 2, "มีนาคม": 3,
+    "เมษายน": 4, "พฤษภาคม": 5, "มิถุนายน": 6,
+    "กรกฎาคม": 7, "สิงหาคม": 8, "กันยายน": 9,
+    "ตุลาคม": 10, "พฤศจิกายน": 11, "ธันวาคม": 12,
+}
+
+def _parse_month_from_cell(val: str) -> int | None:
+    """แปลงค่าเดือน/ปีใน cell (เช่น 'ตุลาคม 2569' หรือ '10/2569') เป็นเลขเดือน"""
+    if not val:
+        return None
+    val = str(val).strip()
+    # รูปแบบ เลข/ปี เช่น "10/2569" หรือ "10-2569"
+    m = re.match(r"^(\d{1,2})[/\-]", val)
+    if m:
+        return int(m.group(1))
+    # รูปแบบชื่อเดือนไทย เช่น "ตุลาคม 2569"
+    for name, num in _THAI_MONTHS.items():
+        if name in val:
+            return num
+    return None
+
 def detect_latest_block(salary_ws) -> int:
-    """หา block ล่าสุดจากชีต Salary"""
+    """หา block ล่าสุด (fallback ถ้าไม่ได้ส่ง month มาจาก sidebar)"""
     latest = 1
     for bn in range(1, 20):
-        col = block_col_letter(bn, 8)   # col 8 ของแต่ละ block
+        col = block_col_letter(bn, 12)
         try:
-            val = salary_ws.acell(f"{col}2").value
+            val = salary_ws.acell(f"{col}1").value
         except Exception:
             break
         if val and str(val).strip():
@@ -88,6 +110,22 @@ def detect_latest_block(salary_ws) -> int:
         else:
             break
     return latest
+
+def find_block_by_month(salary_ws, target_month: int) -> int:
+    """หา block ที่ตรงกับเดือนที่เลือก โดยอ่านเดือน/ปีจาก col 12 แถว 1"""
+    for bn in range(1, 20):
+        col = block_col_letter(bn, 12)
+        try:
+            val = salary_ws.acell(f"{col}1").value
+        except Exception:
+            break
+        parsed = _parse_month_from_cell(val)
+        if parsed == target_month:
+            return bn
+        if not val or not str(val).strip():
+            break
+    # ถ้าหาไม่เจอ fallback เป็น detect_latest_block
+    return detect_latest_block(salary_ws)
 
 def get_month_year_from_salary(salary_ws):
     """ดึงชื่อเดือนและปีจาก B1 ของ Salary sheet"""
@@ -104,6 +142,11 @@ def build_formulas(emp_name: str, block_n: int) -> dict:
 
     def ib(col_1, row):
         return imp_block(pid, emp_name, block_n, col_1, row)
+
+    def ib_num(col_1, row):
+        """IMPORTRANGE ที่คืน 0 ถ้าค่าไม่ใช่ตัวเลข (เช่น "-" หรือว่าง)"""
+        raw = imp_block(pid, emp_name, block_n, col_1, row)[1:]  # ตัด "=" ออก
+        return f"=IFERROR(VALUE({raw}),0)"
 
     # ── Grade/Amount refs สำหรับ IF ────────────────────────────────────────
     grade_col = block_col_letter(block_n, 5)
@@ -125,33 +168,33 @@ def build_formulas(emp_name: str, block_n: int) -> dict:
                 f"IMPORTRANGE(\"{pid}\",\"Salary!A:Q\"),17,0),\"\")"),
 
         # ── รายรับ ──────────────────────────────────────────────────────────
-        "H8":  ib(10, 47),    # อัตราเงินเดือน
-        "H9":  ib(10, 51),    # ค่าตำแหน่ง
-        "H10": "0.00",         # ค่าดูแลงาน/ประสบการณ์ — เว้นว่าง
-        "H11": ib(10, 49),    # ค่าเดินทาง/ค่าสึกหรอ
-        "H12": ib(10, 48),    # เบี้ยขยัน
-        "H13": "0.00",         # ค่าเช่าบ้าน/ค่าอื่นๆ — เว้นว่าง
-        "H14": ib(10, 64),    # ค่าเป้าสาขา
+        "H8":  ib_num(10, 47),    # อัตราเงินเดือน
+        "H9":  ib_num(10, 51),    # ค่าตำแหน่ง
+        "H10": "0.00",             # ค่าดูแลงาน/ประสบการณ์ — เว้นว่าง
+        "H11": ib_num(10, 49),    # ค่าเดินทาง/ค่าสึกหรอ
+        "H12": ib_num(10, 48),    # เบี้ยขยัน
+        "H13": "0.00",             # ค่าเช่าบ้าน/ค่าอื่นๆ — เว้นว่าง
+        "H14": ib_num(10, 64),    # ค่าเป้าสาขา
 
         "P8":  "=H8/30*M8",   # เงินเดือน (บาท) — M8 กรอกมือ
 
-        "M9":  ib(10, 42),    # ค่าล่วงเวลา (นาที)
+        "M9":  ib_num(10, 42),    # ค่าล่วงเวลา (นาที)
         "P9":  "=M9",          # ค่าล่วงเวลา (บาท)
 
         # คอมมิชชั่นจากการสอบ — แยกเพิ่ม/ลด ตาม grade
         "M10": f"=IF({cond_abc},{grade_ir},\"\")",   # เกรด A/B/C → แสดงใน income
         "P10": f"=IF({cond_abc},{amt_ir},0)",
 
-        "P11": ib(10, 58),    # ค่าคอมฯหน้าร้าน
-        "P12": ib(10, 59),    # ค่าคอมฯตจว./ติดตั้ง
+        "P11": ib_num(10, 58),    # ค่าคอมฯหน้าร้าน
+        "P12": ib_num(10, 59),    # ค่าคอมฯตจว./ติดตั้ง
         "P13": "0.00",         # ค่าคอมพิเศษ/ค่า KPI — เว้นว่าง
         "P14": "=SUM(P8:P13)+SUM(H9:H14)",  # รวมเงินได้
 
         # ── รายหัก ──────────────────────────────────────────────────────────
-        "E17": ib(3, 40),     # หักลากิจ (นาที)
+        "E17": ib_num(3, 40),     # หักลากิจ (นาที)
         "H17": "=H8/30/8/60*E17",
 
-        "E18": ib(6, 40),     # ลาป่วย (นาที)
+        "E18": ib_num(6, 40),     # ลาป่วย (นาที)
         "H18": "=H8/30/8/60*E18",
 
         "E19": "0.00",         # หักขาดงาน — เว้นว่าง
@@ -160,10 +203,10 @@ def build_formulas(emp_name: str, block_n: int) -> dict:
         "E20": "0.00",         # หักลาอื่นๆ — เว้นว่าง
         "H20": "=H8/30/8/60*E20",
 
-        "M17": ib(3, 41),     # หักมาสาย (นาที)
+        "M17": ib_num(3, 41),     # หักมาสาย (นาที)
         "P17": "=H8/30/8/60*M17",
 
-        "M18": ib(3, 39),     # มาสาย (ครั้ง)
+        "M18": ib_num(3, 39),     # มาสาย (ครั้ง)
         "P18": "=IF(M18<4,0,(M18-3)*50)",
 
         # คอมมิชชั่นลดจากการสอบ — grade D/E → แสดงใน deduction
@@ -171,7 +214,7 @@ def build_formulas(emp_name: str, block_n: int) -> dict:
         "P19": f"=IF({cond_de},{amt_ir},0)",
 
         "P20": "0.00",         # หักสินค้าเสียหาย — เว้นว่าง
-        "P21": ib(10, 44),    # ประกันสังคม
+        "P21": ib_num(10, 44),    # ประกันสังคม
         "P22": "0.00",         # หักภาษี — เว้นว่าง
 
         "H23": "=SUM(P17:P22)+SUM(H17:H22)",  # รวมหัก
@@ -204,11 +247,13 @@ def run_generate_payslips(gc, sheets_svc, target_file_id, month=None, progress_c
     payroll_wb  = gc.open_by_key(PAYROLL_SHEET_ID)
     salary_ws   = payroll_wb.worksheet(SALARY_SHEET)
 
-    latest_block          = month if month else detect_latest_block(salary_ws)
+    latest_block = detect_latest_block(salary_ws)
+    log(f"Block ปัจจุบัน (bookmark สุดท้าย): {latest_block}", 8)
+
     month_name, year      = get_month_year_from_salary(salary_ws)
     slip_filename         = f"Slip_{month_name}_{year}"
 
-    log(f"Block: {latest_block} (เดือน {month if month else 'auto-detect'}) | {month_name} {year}", 10)
+    log(f"Block: {latest_block} | {month_name} {year}", 10)
 
     # ── รายชื่อชีตพนักงาน (pattern: รหัส_ชื่อ) ────────────────────────────
     all_sheets = payroll_wb.worksheets()
