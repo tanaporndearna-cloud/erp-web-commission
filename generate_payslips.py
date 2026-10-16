@@ -240,7 +240,8 @@ def run_generate_payslips(gc, sheets_svc, target_file_id, progress_cb=None) -> t
         for ws in existing_sheets
         if ws.id != copied_gid
     ]
-    slip_wb.batch_update({"requests": rename_req + delete_reqs})
+    # ลบชีตเก่าก่อน แล้วค่อย rename — ป้องกัน "sheet name already exists"
+    slip_wb.batch_update({"requests": delete_reqs + rename_req})
     log("เตรียม template สำเร็จ ✅", 28)
 
     # refresh อีกครั้งหลัง delete
