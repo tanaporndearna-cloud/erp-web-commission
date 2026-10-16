@@ -97,8 +97,12 @@ def _parse_month_from_cell(val: str) -> int | None:
     return None
 
 def detect_latest_block(salary_ws) -> int:
-    """หา block ล่าสุด (fallback ถ้าไม่ได้ส่ง month มาจาก sidebar)"""
+    """หา block ปัจจุบัน = block สุดท้ายที่ col 12 แถว 1 มีค่า (Bookmark เดือน/ปี)
+
+    ตรรกะ: เดือนปัจจุบันอยู่ใน block ขวาสุดที่มีข้อมูลเสมอ
+    """
     latest = 1
+    empty_streak = 0   # นับ block ว่างต่อเนื่อง
     for bn in range(1, 20):
         col = block_col_letter(bn, 12)
         try:
@@ -107,8 +111,11 @@ def detect_latest_block(salary_ws) -> int:
             break
         if val and str(val).strip():
             latest = bn
+            empty_streak = 0
         else:
-            break
+            empty_streak += 1
+            if empty_streak >= 2:   # ว่าง 2 block ติดกัน = ถึงจุดสิ้นสุดแน่นอน
+                break
     return latest
 
 def find_block_by_month(salary_ws, target_month: int) -> int:
@@ -248,11 +255,27 @@ def run_generate_payslips(gc, sheets_svc, target_file_id, month=None, progress_c
     salary_ws   = payroll_wb.worksheet(SALARY_SHEET)
 
     latest_block = detect_latest_block(salary_ws)
-    log(f"Block ปัจจุบัน (bookmark สุดท้าย): {latest_block}", 8)
+    log(f"Block ปัจจุบัน (block สุดท้ายที่มีข้อมูล): {latest_block}", 8)
 
-    month_name, year      = get_month_year_from_salary(salary_ws)
-    slip_filename         = f"Slip_{month_name}_{year}"
+    # ดึงชื่อเดือน/ปีจาก col 12 แถว 1 ของ block ที่เลือก
+    bm_col = block_col_letter(latest_block, 12)
+    bm_val = salary_ws.acell(f"{bm_col}1").value or ""
+    # fallback B1
+    if not bm_val.strip():
+        month_name, year = get_month_year_from_salary(salary_ws)
+    else:
+        # แยก "ตุลาคม 2569" หรือ "10/2569"
+        m = re.match(r"^(\d{1,2})[/\-](\d+)", bm_val.strip())
+        if m:
+            month_num = int(m.group(1))
+            year      = m.group(2)
+            month_name = next((k for k, v in _THAI_MONTHS.items() if v == month_num), str(month_num))
+        else:
+            parts = bm_val.strip().split()
+            month_name = parts[0] if parts else "ไม่ทราบ"
+            year       = parts[1] if len(parts) > 1 else "2569"
 
+    slip_filename = f"Slip_{month_name}_{year}"
     log(f"Block: {latest_block} | {month_name} {year}", 10)
 
     # ── รายชื่อชีตพนักงาน (pattern: รหัส_ชื่อ) ────────────────────────────
