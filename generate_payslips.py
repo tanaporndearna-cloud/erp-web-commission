@@ -23,6 +23,7 @@ TEMPLATE_SHEET_ID = "1H44tl2BHMBIO-pYpxTngVKrullpfeWpuYeUZHKv8TBw"
 OUTPUT_FOLDER_ID  = "16IFsEN8w7idA9T7hfcHEXVva6FUSUuYH"
 TEMPLATE_TAB      = "ชีต1"
 SALARY_SHEET      = "Salary"
+OWNER_EMAIL       = "ai02.trc@gmail.com"        # ← เจ้าของไฟล์จริง (รับ ownership)
 
 # Block structure (เหมือน payroll_page_updated.py)
 BLOCK_SIZE      = 13
@@ -206,6 +207,22 @@ def run_generate_payslips(gc, drive_svc, sheets_svc, progress_cb=None) -> tuple:
     ).execute()
     new_file_id = new_file["id"]
     log(f"สร้างไฟล์: {slip_filename}", 25)
+
+    # ── Transfer ownership → เจ้าของจริง (ไม่งั้น Service Account ใช้ quota ตัวเอง) ──
+    log("กำลัง transfer ownership...", 27)
+    try:
+        drive_svc.permissions().create(
+            fileId=new_file_id,
+            body={
+                "type": "user",
+                "role": "owner",
+                "emailAddress": OWNER_EMAIL,
+            },
+            transferOwnership=True,
+        ).execute()
+    except Exception as e:
+        # บาง environment ไม่อนุญาต transferOwnership — ข้ามไปได้ค่ะ
+        log(f"⚠️ transfer ownership ไม่สำเร็จ (ข้ามได้): {e}", 27)
 
     slip_wb      = gc.open_by_key(new_file_id)
     template_tab = slip_wb.worksheet(TEMPLATE_TAB)
