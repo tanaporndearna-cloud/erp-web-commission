@@ -328,13 +328,7 @@ with st.expander("📋 วิธีใช้ก่อนกด (คลิกเ�
 6. วาง ID ด้านล่างแล้วกดปุ่ม
 """)
 
-# ── Input File IDs ───────────────────────────────────────────────────────────
-template_file_id = st.text_input(
-    "📄 วาง File ID ของไฟล์ Template (09Payslip_template)",
-    placeholder="เช่น 1nr0100FNOa9UA-TpXfEvgA1uaoscD41C8sbl9HbHz_l",
-    help="ID ของไฟล์ Template ที่มีชีตชื่อ 'Template' — copy จาก URL ระหว่าง /d/ กับ /edit",
-)
-
+# ── Input File ID ────────────────────────────────────────────────────────────
 target_file_id = st.text_input(
     "📋 วาง File ID ของไฟล์ Slip ที่สร้างไว้",
     placeholder="เช่น 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms",
@@ -378,7 +372,6 @@ if slip_btn:
                 gc=slip_gc,
                 sheets_svc=slip_sheets,
                 target_file_id=file_id_clean,
-                template_sheet_id=template_file_id.strip() if template_file_id else None,
                 progress_cb=slip_progress,
             )
 
