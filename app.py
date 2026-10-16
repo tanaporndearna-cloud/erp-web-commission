@@ -305,6 +305,67 @@ except ImportError:
     st.warning("⚠️ ไม่พบ payroll_page.py — กรุณาวางไฟล์ในโฟลเดอร์เดียวกับ app.py")
 
 
+# ===== Payslip Section =====
+st.divider()
+st.subheader("🧾 สร้างสลีปเงินเดือน")
+st.caption("สร้างไฟล์ Google Sheets สลีปเงินเดือนรายเดือน พร้อมสูตร IMPORTRANGE อัตโนมัติ")
+
+slip_btn = st.button(
+    "🧾 สร้างสลีปเงินเดือน",
+    type="primary",
+    use_container_width=True,
+)
+
+if slip_btn:
+    try:
+        from googleapiclient.discovery import build as gapi_build
+        from google.oauth2.service_account import Credentials as SACredentials
+
+        SLIP_SCOPES = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds_dict  = dict(st.secrets["gcp_service_account"])
+        slip_creds  = SACredentials.from_service_account_info(creds_dict, scopes=SLIP_SCOPES)
+        slip_drive  = gapi_build("drive",  "v3", credentials=slip_creds)
+        slip_sheets = gapi_build("sheets", "v4", credentials=slip_creds)
+        slip_gc     = get_gspread_client()
+
+        from generate_payslips import run_generate_payslips
+
+        status_slip  = st.empty()
+        progress_bar = st.progress(0)
+
+        def slip_progress(msg, pct=None):
+            status_slip.info(f"⏳ {msg}")
+            if pct is not None:
+                progress_bar.progress(min(pct, 100))
+
+        with st.spinner("กำลังสร้างสลีป..."):
+            file_id, file_name = run_generate_payslips(
+                gc=slip_gc,
+                drive_svc=slip_drive,
+                sheets_svc=slip_sheets,
+                progress_cb=slip_progress,
+            )
+
+        progress_bar.progress(100)
+        status_slip.success(f"✅ สร้างสลีปเสร็จแล้วค่ะ! — {file_name}")
+        st.markdown(
+            f"[📄 เปิดไฟล์ {file_name}]"
+            f"(https://docs.google.com/spreadsheets/d/{file_id})"
+        )
+        st.warning(
+            "⚠️ เปิดไฟล์แล้วกด **Allow access** ครั้งแรก "
+            "เพื่อให้ IMPORTRANGE ดึงข้อมูลได้ (กดครั้งเดียวครอบคลุมทุกชีต)\n\n"
+            "📝 จากนั้นกรอก **M8 (เงินเดือน วัน)** ทีละชีตตามจริงค่ะ"
+        )
+
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาด: {e}")
+        st.exception(e)
+
+
 # ===== Footer =====
 st.divider()
 st.caption("TRC Motorsport · Commission Calculator · Powered by Streamlit")
