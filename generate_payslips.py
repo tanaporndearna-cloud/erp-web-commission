@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
 generate_payslips.py — สร้างสลีปเงินเดือนรายเดือน TRC Motorsport
-สร้างไฟล์ Google Sheets ใหม่ใน folder ที่กำหนด และ generate ชีตพนักงานทุกคน
+เปิดไฟล์ Google Sheets ที่ผู้ใช้สร้างไว้แล้ว และ generate ชีตพนักงานทุกคน
 
 Usage (standalone):
-    python3 generate_payslips.py
+    python3 generate_payslips.py <target_file_id>
 
 Usage (from Streamlit):
     from generate_payslips import run_generate_payslips
-    file_id, file_name = run_generate_payslips(gc, drive_svc, sheets_svc, progress_cb)
+    file_name = run_generate_payslips(gc, sheets_svc, target_file_id, progress_cb)
 """
 import re
+import sys
 import time
 import gspread
 from google.oauth2.service_account import Credentials
@@ -20,10 +21,8 @@ from googleapiclient.discovery import build
 CREDENTIALS_FILE  = "credentials.json"          # ← ใช้เฉพาะตอนรันแบบ standalone
 PAYROLL_SHEET_ID  = "1oWaO8U1nNItgozvdSAcfN6QC-Ih78d0H9n5mJRfK6W4"
 TEMPLATE_SHEET_ID = "1H44tl2BHMBIO-pYpxTngVKrullpfeWpuYeUZHKv8TBw"
-OUTPUT_FOLDER_ID  = "13E-RIMy7hZBZ_tCm136gBZiaHBPm2sv4"
 TEMPLATE_TAB      = "ชีต1"
 SALARY_SHEET      = "Salary"
-OWNER_EMAIL       = "ai02.trc@gmail.com"        # ← เจ้าของไฟล์จริง (รับ ownership)
 
 # Block structure (เหมือน payroll_page_updated.py)
 BLOCK_SIZE      = 13
@@ -163,15 +162,16 @@ def build_formulas(emp_name: str, block_n: int) -> dict:
     }
 
 # ── CORE FUNCTION (ใช้ได้ทั้ง standalone และ Streamlit) ──────────────────────
-def run_generate_payslips(gc, drive_svc, sheets_svc, progress_cb=None) -> tuple:
+def run_generate_payslips(gc, sheets_svc, target_file_id, progress_cb=None) -> tuple:
     """
-    สร้างไฟล์ Slip เงินเดือนใหม่ใน Google Drive
+    เติมชีตพนักงานลงในไฟล์ Google Sheets ที่ผู้ใช้สร้างไว้แล้ว
 
     Parameters:
-        gc         — gspread client (authorized)
-        drive_svc  — Google Drive API service
-        sheets_svc — Google Sheets API service
-        progress_cb — callback(msg: str, pct: int | None) สำหรับแสดง progress
+        gc             — gspread client (authorized)
+        sheets_svc     — Google Sheets API service
+        target_file_id — ID ของไฟล์ Google Sheets ที่ผู้ใช้สร้างเอง
+                         (copy จาก Template ใน Drive แล้ว paste ID มาที่นี่)
+        progress_cb    — callback(msg: str, pct: int | None) สำหรับแสดง progress
 
     Returns:
         (file_id: str, file_name: str)
@@ -198,38 +198,21 @@ def run_generate_payslips(gc, drive_svc, sheets_svc, progress_cb=None) -> tuple:
                   if re.match(r"^\d+_.+", ws.title)]
     log(f"พบพนักงาน {len(emp_sheets)} คน", 15)
 
-    # ── สร้างไฟล์ว่างก่อน (ไม่ copy เพราะ Service Account มี quota = 0) ──────
-    log("กำลังสร้างไฟล์ Slip ใหม่ใน Google Drive...", 20)
-    new_file = drive_svc.files().create(
-        body={
-            "name": slip_filename,
-            "mimeType": "application/vnd.google-apps.spreadsheet",
-            "parents": [OUTPUT_FOLDER_ID],
-        },
-        fields="id",
-        supportsAllDrives=True,
-    ).execute()
-    new_file_id = new_file["id"]
-    log(f"สร้างไฟล์: {slip_filename}", 23)
-
-    # ── Transfer ownership ทันที ก่อนเพิ่ม content ใดๆ ───────────────────────
-    log("กำลัง transfer ownership...", 25)
+    # ── เปิดไฟล์ที่ผู้ใช้สร้างไว้แล้ว ────────────────────────────────────────
+    log("กำลังเปิดไฟล์ Slip ที่สร้างไว้...", 20)
     try:
-        drive_svc.permissions().create(
-            fileId=new_file_id,
-            body={
-                "type": "user",
-                "role": "owner",
-                "emailAddress": OWNER_EMAIL,
-            },
-            transferOwnership=True,
-        ).execute()
-        log("Transfer ownership สำเร็จ ✅", 27)
+        slip_wb = gc.open_by_key(target_file_id)
     except Exception as e:
-        log(f"⚠️ transfer ownership ไม่สำเร็จ: {e}", 27)
+        raise ValueError(
+            f"ไม่สามารถเปิดไฟล์ได้ (ID: {target_file_id})\n"
+            f"โปรดตรวจสอบ: 1) File ID ถูกต้อง  2) Share ไฟล์ให้ Service Account แล้ว\n"
+            f"Error: {e}"
+        )
+    log(f"เปิดไฟล์ '{slip_wb.title}' สำเร็จ ✅", 23)
 
-    # ── Copy template tab จาก Template file เข้าไฟล์ใหม่ ───────────────────
-    log("กำลัง copy template sheet...", 28)
+    # ── เตรียม template tab ────────────────────────────────────────────────────
+    # ดึง template tab จาก Template file แล้ว copy เข้าไฟล์ target
+    log("กำลัง copy template sheet...", 25)
     template_wb      = gc.open_by_key(TEMPLATE_SHEET_ID)
     template_tab_src = template_wb.worksheet(TEMPLATE_TAB)
     template_gid_src = template_tab_src.id
@@ -237,40 +220,45 @@ def run_generate_payslips(gc, drive_svc, sheets_svc, progress_cb=None) -> tuple:
     dup = sheets_svc.spreadsheets().sheets().copyTo(
         spreadsheetId=TEMPLATE_SHEET_ID,
         sheetId=template_gid_src,
-        body={"destinationSpreadsheetId": new_file_id},
+        body={"destinationSpreadsheetId": target_file_id},
     ).execute()
     copied_gid = dup["sheetId"]
 
-    # Rename copied tab → TEMPLATE_TAB + ลบ Sheet1 default ที่ติดมา
-    slip_wb        = gc.open_by_key(new_file_id)
-    default_sheets = slip_wb.worksheets()
-    requests_batch = [
-        {
-            "updateSheetProperties": {
-                "properties": {"sheetId": copied_gid, "title": TEMPLATE_TAB},
-                "fields": "title",
-            }
-        }
-    ]
-    for ws in default_sheets:
-        if ws.id != copied_gid:
-            requests_batch.append({"deleteSheet": {"sheetId": ws.id}})
-    slip_wb.batch_update({"requests": requests_batch})
+    # Rename copied tab → TEMPLATE_TAB + ลบชีตอื่นที่ไม่ใช่ template
+    slip_wb        = gc.open_by_key(target_file_id)   # refresh
+    existing_sheets = slip_wb.worksheets()
 
+    rename_req = [{
+        "updateSheetProperties": {
+            "properties": {"sheetId": copied_gid, "title": TEMPLATE_TAB},
+            "fields": "title",
+        }
+    }]
+    # ลบทุกชีตที่ไม่ใช่ template ที่เพิ่ง copy มา (ชีตเดิมที่ผู้ใช้สร้างมาด้วย)
+    delete_reqs = [
+        {"deleteSheet": {"sheetId": ws.id}}
+        for ws in existing_sheets
+        if ws.id != copied_gid
+    ]
+    slip_wb.batch_update({"requests": rename_req + delete_reqs})
+    log("เตรียม template สำเร็จ ✅", 28)
+
+    # refresh อีกครั้งหลัง delete
+    slip_wb     = gc.open_by_key(target_file_id)
     template_tab = slip_wb.worksheet(TEMPLATE_TAB)
     template_gid = template_tab.id
 
     # ── Generate ชีตพนักงาน ─────────────────────────────────────────────────
     total = len(emp_sheets)
     for i, emp_name in enumerate(emp_sheets):
-        pct = 25 + int((i / total) * 65)
+        pct = 30 + int((i / total) * 60)
         log(f"[{i+1}/{total}] สร้างชีต {emp_name}...", pct)
 
         # Copy template tab
         dup = sheets_svc.spreadsheets().sheets().copyTo(
-            spreadsheetId=new_file_id,
+            spreadsheetId=target_file_id,
             sheetId=template_gid,
-            body={"destinationSpreadsheetId": new_file_id},
+            body={"destinationSpreadsheetId": target_file_id},
         ).execute()
         new_gid = dup["sheetId"]
 
@@ -297,19 +285,25 @@ def run_generate_payslips(gc, drive_svc, sheets_svc, progress_cb=None) -> tuple:
         "deleteSheet": {"sheetId": template_gid}
     }]})
 
-    log(f"เสร็จสิ้น! ไฟล์: {slip_filename}", 100)
-    return new_file_id, slip_filename
+    log(f"เสร็จสิ้น! ไฟล์: {slip_wb.title}", 100)
+    return target_file_id, slip_wb.title
 
 
 # ── MAIN (standalone) ─────────────────────────────────────────────────────────
 def main():
+    if len(sys.argv) < 2:
+        print("Usage: python3 generate_payslips.py <target_file_id>")
+        print("  target_file_id: ID ของไฟล์ Google Sheets ที่ copy จาก template ไว้แล้ว")
+        sys.exit(1)
+
+    target_file_id = sys.argv[1]
+
     print("── เชื่อม Google APIs ──")
     creds      = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
     gc         = gspread.authorize(creds)
-    drive_svc  = build("drive",  "v3", credentials=creds)
     sheets_svc = build("sheets", "v4", credentials=creds)
 
-    file_id, file_name = run_generate_payslips(gc, drive_svc, sheets_svc)
+    file_id, file_name = run_generate_payslips(gc, sheets_svc, target_file_id)
 
     print(f"\n✅ เสร็จสิ้น!")
     print(f"   ไฟล์: https://docs.google.com/spreadsheets/d/{file_id}")
