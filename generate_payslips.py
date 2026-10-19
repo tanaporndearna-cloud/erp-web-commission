@@ -592,7 +592,7 @@ def export_payslip_pdfs(creds, target_file_id: str, progress_cb=None) -> bytes:
                             pdf_bytes = resp.content
                             break
                         elif resp.status_code == 429:
-                            _wait = 30 * (_attempt + 1)
+                            _wait = 10 * (_attempt + 1)
                             log(f"  ⏳ Rate limit [{ws.title}] — รอ {_wait}s (ครั้ง {_attempt+1}/6)", None)
                             time.sleep(_wait)
                         else:
@@ -635,7 +635,7 @@ def export_payslip_pdfs(creds, target_file_id: str, progress_cb=None) -> bytes:
                 zf.writestr(pdf_filename, pdf_bytes)
                 ok_count += 1
 
-                time.sleep(1.2)   # ป้องกัน rate limit (Google อนุญาต ~1 req/sec)
+                time.sleep(2.0)   # ป้องกัน rate limit (Google อนุญาต ~1 req/sec)
 
     finally:
         # ── คืนค่าคอลัมน์ R+ กลับมาเสมอ ไม่ว่า export จะสำเร็จหรือไม่ ──────
