@@ -455,20 +455,23 @@ def export_payslip_pdfs(creds, target_file_id: str, progress_cb=None) -> bytes:
     # ── รายชื่อชีตพนักงานใน Slip file ────────────────────────────────────────
     all_sheets = slip_wb.worksheets()
     emp_sheets = [s for s in all_sheets if re.match(r"^\d+_.+", s.title)]
-    log(f"พบชีตพนักงาน {len(emp_sheets)} ชีตใน Slip file", 5)
+    non_emp    = [s.title for s in all_sheets if not re.match(r"^\d+_.+", s.title)]
+    log(f"พบชีตพนักงาน {len(emp_sheets)} ชีตใน Slip file (ชีตอื่น: {len(non_emp)} — {', '.join(non_emp[:5])})", 5)
 
     # ── อ่านรหัสผ่านจาก Payroll L5 (batch — 1 API call) ─────────────────────
     log("กำลังอ่านรหัสผ่านจาก Payroll Sheet...", 8)
     payroll_sheets = payroll_wb.worksheets()
     pw_map = {}   # {emp_code: password}
 
+    # สร้าง Sheets API service (ใช้ทั้งฟังก์ชัน)
+    from googleapiclient.discovery import build as _build_svc
+    _sheets_svc = _build_svc("sheets", "v4", credentials=creds)
+
     # สร้าง list ชีตพนักงานใน Payroll พร้อม range L5
     payroll_emp_sheets = [s for s in payroll_sheets if re.match(r"^\d+_.+", s.title)]
     if payroll_emp_sheets:
         try:
             # batchGet ทีเดียว ประหยัด API call
-            from googleapiclient.discovery import build as _build_svc
-            _sheets_svc = _build_svc("sheets", "v4", credentials=creds)
             ranges = [f"'{s.title}'!L5" for s in payroll_emp_sheets]
             result = _sheets_svc.spreadsheets().values().batchGet(
                 spreadsheetId=PAYROLL_SHEET_ID,
@@ -507,83 +510,149 @@ def export_payslip_pdfs(creds, target_file_id: str, progress_cb=None) -> bytes:
         except Exception:
             pass
 
+    # ── ซ่อนคอลัมน์ R+ (index 17+) เพื่อให้ PDF แสดงเฉพาะ A-Q ─────────────
+    log("กำลังตั้ง print range A-Q...", 13)
+    try:
+        sm = _sheets_svc.spreadsheets().get(
+            spreadsheetId=target_file_id,
+            fields="sheets(properties(sheetId,gridProperties(columnCount)))"
+        ).execute()
+        col_map = {
+            s["properties"]["sheetId"]: s["properties"]["gridProperties"].get("columnCount", 50)
+            for s in sm.get("sheets", [])
+        }
+    except Exception:
+        col_map = {}
+
+    hide_reqs = []
+    for _ws in emp_sheets:
+        _cc = col_map.get(_ws.id, 50)
+        if _cc > 17:
+            hide_reqs.append({
+                "updateDimensionProperties": {
+                    "range": {"sheetId": _ws.id, "dimension": "COLUMNS",
+                              "startIndex": 17, "endIndex": _cc},
+                    "properties": {"hiddenByUser": True},
+                    "fields": "hiddenByUser"
+                }
+            })
+    if hide_reqs:
+        try:
+            _reqs = hide_reqs
+            api_call_with_retry(lambda r=_reqs: _sheets_svc.spreadsheets().batchUpdate(
+                spreadsheetId=target_file_id, body={"requests": r}
+            ).execute())
+            log(f"ซ่อนคอลัมน์ R+ ใน {len(hide_reqs)} ชีตแล้ว", 14)
+        except Exception as _e:
+            log(f"  ⚠️ ซ่อนคอลัมน์ไม่สำเร็จ จะลองด้วย c1/c2 แทน: {_e}", None)
+            hide_reqs = []
+
     # ── Export + ใส่รหัสผ่าน + ZIP ──────────────────────────────────────────
     zip_buf  = io.BytesIO()
     ok_count = 0
     err_list = []
 
-    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        total = len(emp_sheets)
-        for idx, ws in enumerate(emp_sheets, 1):
-            emp_code = ws.title.split("_")[0].strip()
-            emp_name = ws.title  # ใช้ชื่อชีตเป็นชื่อไฟล์
+    try:
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            total = len(emp_sheets)
+            for idx, ws in enumerate(emp_sheets, 1):
+                emp_code = ws.title.split("_")[0].strip()
+                emp_name = ws.title  # ใช้ชื่อชีตเป็นชื่อไฟล์
 
-            pct = int(15 + (idx / total) * 80)
-            log(f"[{idx}/{total}] Export PDF: {ws.title}", pct)
+                pct = int(15 + (idx / total) * 80)
+                log(f"[{idx}/{total}] Export PDF: {ws.title}", pct)
 
-            # URL export PDF: A4 portrait, col A-Q (0-16), ไม่มีเส้นตาราง
-            export_url = (
-                f"https://docs.google.com/spreadsheets/d/{target_file_id}/export"
-                f"?format=pdf"
-                f"&gid={ws.id}"
-                f"&size=A4"
-                f"&portrait=true"
-                f"&fitw=true"
-                f"&gridlines=false"
-                f"&printtitle=false"
-                f"&sheetnames=false"
-                f"&pagenum=UNDEFINED"
-                f"&fzr=false"
-                f"&c1=0&c2=16"      # คอลัมน์ A(0) ถึง Q(16)
-            )
+                # URL export PDF: A4 portrait, ไม่มีเส้นตาราง
+                # คอลัมน์ R+ ถูกซ่อนไว้แล้ว จึงแสดงเฉพาะ A-Q อัตโนมัติ
+                export_url = (
+                    f"https://docs.google.com/spreadsheets/d/{target_file_id}/export"
+                    f"?format=pdf"
+                    f"&gid={ws.id}"
+                    f"&size=A4"
+                    f"&portrait=true"
+                    f"&fitw=true"
+                    f"&gridlines=false"
+                    f"&printtitle=false"
+                    f"&sheetnames=false"
+                    f"&pagenum=UNDEFINED"
+                    f"&fzr=false"
+                    f"&c1=0&c2=16"      # คอลัมน์ A(0) ถึง Q(16)
+                )
 
-            try:
-                resp = requests.get(export_url, headers=auth_headers, timeout=60)
-                if resp.status_code != 200:
-                    err_list.append(f"{ws.title}: HTTP {resp.status_code}")
-                    continue
-                pdf_bytes = resp.content
-            except Exception as e:
-                err_list.append(f"{ws.title}: download error — {e}")
-                continue
-
-            # ใส่รหัสผ่าน
-            password = pw_map.get(emp_code, "")
-            if password:
                 try:
-                    in_buf  = io.BytesIO(pdf_bytes)
-                    out_buf = io.BytesIO()
-                    with pikepdf.open(in_buf) as pdf:
-                        pdf.save(
-                            out_buf,
-                            encryption=pikepdf.Encryption(
-                                owner=password,
-                                user=password,
-                                R=4,
-                            )
-                        )
-                    out_buf.seek(0)
-                    pdf_bytes = out_buf.getvalue()
+                    resp = requests.get(export_url, headers=auth_headers, timeout=60)
+                    if resp.status_code != 200:
+                        err_list.append(f"{ws.title}: HTTP {resp.status_code}")
+                        continue
+                    pdf_bytes = resp.content
                 except Exception as e:
-                    err_list.append(f"{ws.title}: pikepdf error — {e}")
-                    # ยังคงเพิ่มไฟล์ที่ไม่มีรหัสผ่านไว้ก่อน
-            else:
-                log(f"  ⚠️ {ws.title}: ไม่พบรหัสผ่านใน Payroll L5", None)
+                    err_list.append(f"{ws.title}: download error — {e}")
+                    continue
 
-            # ตั้งชื่อไฟล์ Slip_{month_en}_{year_be}_{emp_code}_{ชื่อพนักงาน}.pdf
-            safe_title = re.sub(r'[\\/*?:"<>|]', "_", ws.title)
-            pdf_filename = f"Slip_{month_en}_{year_be}_{safe_title}.pdf"
-            zf.writestr(pdf_filename, pdf_bytes)
-            ok_count += 1
+                # ใส่รหัสผ่าน
+                password = pw_map.get(emp_code, "")
+                if password:
+                    try:
+                        in_buf  = io.BytesIO(pdf_bytes)
+                        out_buf = io.BytesIO()
+                        with pikepdf.open(in_buf) as pdf:
+                            pdf.save(
+                                out_buf,
+                                encryption=pikepdf.Encryption(
+                                    owner=password,
+                                    user=password,
+                                    R=4,
+                                )
+                            )
+                        out_buf.seek(0)
+                        pdf_bytes = out_buf.getvalue()
+                    except Exception as e:
+                        err_list.append(f"{ws.title}: pikepdf error — {e}")
+                        # ยังคงเพิ่มไฟล์ที่ไม่มีรหัสผ่านไว้ก่อน
+                else:
+                    log(f"  ⚠️ {ws.title}: ไม่พบรหัสผ่านใน Payroll L5", None)
 
-            time.sleep(0.3)   # ป้องกัน rate limit
+                # ตั้งชื่อไฟล์ Slip_{month_en}_{year_be}_{safe_title}.pdf
+                safe_title = re.sub(r'[\\/*?:"<>|]', "_", ws.title)
+                pdf_filename = f"Slip_{month_en}_{year_be}_{safe_title}.pdf"
+                zf.writestr(pdf_filename, pdf_bytes)
+                ok_count += 1
+
+                time.sleep(0.3)   # ป้องกัน rate limit
+
+    finally:
+        # ── คืนค่าคอลัมน์ R+ กลับมาเสมอ ไม่ว่า export จะสำเร็จหรือไม่ ──────
+        if hide_reqs:
+            unhide_reqs = [
+                {
+                    "updateDimensionProperties": {
+                        "range": {
+                            "sheetId": r["updateDimensionProperties"]["range"]["sheetId"],
+                            "dimension": "COLUMNS",
+                            "startIndex": 17,
+                            "endIndex":   r["updateDimensionProperties"]["range"]["endIndex"],
+                        },
+                        "properties": {"hiddenByUser": False},
+                        "fields": "hiddenByUser"
+                    }
+                }
+                for r in hide_reqs
+            ]
+            try:
+                _ur = unhide_reqs
+                api_call_with_retry(lambda r=_ur: _sheets_svc.spreadsheets().batchUpdate(
+                    spreadsheetId=target_file_id, body={"requests": r}
+                ).execute())
+                log("คืนค่าคอลัมน์ R+ แล้ว", None)
+            except Exception as _e:
+                log(f"  ⚠️ คืนคอลัมน์ R+ ไม่สำเร็จ: {_e}", None)
 
     zip_buf.seek(0)
     log(f"✅ Export PDF เสร็จ {ok_count} ไฟล์", 98)
     if err_list:
         log(f"⚠️ มีข้อผิดพลาด {len(err_list)} รายการ: " + "; ".join(err_list[:5]), None)
 
-    return zip_buf.getvalue(), month_en, year_be
+    return zip_buf.getvalue(), month_en, year_be, err_list
 
 
 # ── MAIN (standalone) ─────────────────────────────────────────────────────────
