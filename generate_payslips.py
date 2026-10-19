@@ -579,14 +579,31 @@ def export_payslip_pdfs(creds, target_file_id: str, progress_cb=None) -> bytes:
                     f"&c1=0&c2=16"      # คอลัมน์ A(0) ถึง Q(16)
                 )
 
-                try:
-                    resp = requests.get(export_url, headers=auth_headers, timeout=60)
-                    if resp.status_code != 200:
-                        err_list.append(f"{ws.title}: HTTP {resp.status_code}")
-                        continue
-                    pdf_bytes = resp.content
-                except Exception as e:
-                    err_list.append(f"{ws.title}: download error — {e}")
+                # ── Fetch PDF พร้อม retry เมื่อโดน 429 ──────────────────────────
+                pdf_bytes = None
+                for _attempt in range(6):
+                    try:
+                        # Refresh token ถ้าหมดอายุ
+                        if not creds.valid:
+                            creds.refresh(GoogleAuthRequest())
+                            auth_headers = {"Authorization": f"Bearer {creds.token}"}
+                        resp = requests.get(export_url, headers=auth_headers, timeout=60)
+                        if resp.status_code == 200:
+                            pdf_bytes = resp.content
+                            break
+                        elif resp.status_code == 429:
+                            _wait = 30 * (_attempt + 1)
+                            log(f"  ⏳ Rate limit [{ws.title}] — รอ {_wait}s (ครั้ง {_attempt+1}/6)", None)
+                            time.sleep(_wait)
+                        else:
+                            err_list.append(f"{ws.title}: HTTP {resp.status_code}")
+                            break
+                    except Exception as _e:
+                        err_list.append(f"{ws.title}: download error — {_e}")
+                        break
+                if pdf_bytes is None:
+                    if not any(ws.title in e for e in err_list):
+                        err_list.append(f"{ws.title}: HTTP 429 — เกิน retry limit")
                     continue
 
                 # ใส่รหัสผ่าน
@@ -618,7 +635,7 @@ def export_payslip_pdfs(creds, target_file_id: str, progress_cb=None) -> bytes:
                 zf.writestr(pdf_filename, pdf_bytes)
                 ok_count += 1
 
-                time.sleep(0.3)   # ป้องกัน rate limit
+                time.sleep(1.2)   # ป้องกัน rate limit (Google อนุญาต ~1 req/sec)
 
     finally:
         # ── คืนค่าคอลัมน์ R+ กลับมาเสมอ ไม่ว่า export จะสำเร็จหรือไม่ ──────
