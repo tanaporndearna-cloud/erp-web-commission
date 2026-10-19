@@ -452,7 +452,7 @@ if pdf_btn:
                 pdf_progress.progress(min(int(pct), 100))
 
         with st.spinner("กำลัง Export PDF..."):
-            zip_bytes, month_en, year_be = export_payslip_pdfs(
+            zip_bytes, month_en, year_be, err_list = export_payslip_pdfs(
                 creds=pdf_creds,
                 target_file_id=pdf_file_id_clean,
                 progress_cb=pdf_progress_cb,
@@ -460,7 +460,13 @@ if pdf_btn:
 
         pdf_progress.progress(100)
         zip_name = f"Slip_{month_en}_{year_be}.zip"
-        pdf_status.success(f"✅ Export PDF เสร็จแล้วค่ะ! — {zip_name}")
+        if err_list:
+            pdf_status.warning(f"⚠️ Export เสร็จ — มี {len(err_list)} ไฟล์ที่ error (ดูรายละเอียดด้านล่าง)")
+            with st.expander(f"❌ รายการ error ({len(err_list)} รายการ)", expanded=True):
+                for e in err_list:
+                    st.text(e)
+        else:
+            pdf_status.success(f"✅ Export PDF เสร็จแล้วค่ะ! — {zip_name}")
 
         st.download_button(
             label=f"⬇️ ดาวน์โหลด {zip_name}",
