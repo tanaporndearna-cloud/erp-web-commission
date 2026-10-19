@@ -10,6 +10,7 @@ Usage (from Streamlit):
     from generate_payslips import run_generate_payslips
     file_name = run_generate_payslips(gc, sheets_svc, target_file_id, progress_cb)
 """
+import calendar
 import re
 import sys
 import time
@@ -143,7 +144,8 @@ def get_month_year_from_salary(salary_ws):
     return "ไม่ทราบ", "2569"
 
 # ── BUILD FORMULAS ────────────────────────────────────────────────────────────
-def build_formulas(emp_name: str, block_n: int) -> dict:
+def build_formulas(emp_name: str, block_n: int,
+                   month_num: int = None, year_be: str = None) -> dict:
     """สร้าง dict ของ {cell_address: formula} สำหรับพนักงาน 1 คน"""
     pid = PAYROLL_SHEET_ID
 
@@ -165,8 +167,17 @@ def build_formulas(emp_name: str, block_n: int) -> dict:
     cond_abc = f"OR({grade_ir}=\"A\",{grade_ir}=\"B\",{grade_ir}=\"C\")"
     cond_de  = f"OR({grade_ir}=\"D\",{grade_ir}=\"E\")"
 
+    # ── C2: วันที่จ่าย = วันสิ้นเดือนของเดือนที่คำนวณ ────────────────────────
+    try:
+        year_ad  = int(str(year_be)) - 543
+        last_day = calendar.monthrange(year_ad, month_num)[1]
+        c2_val   = f"{last_day:02d}/{month_num:02d}/{year_be}"
+    except Exception:
+        c2_val = ""
+
     return {
         # ── Header info ─────────────────────────────────────────────────────
+        "C2":  c2_val,         # วันที่จ่าย (วันสิ้นเดือน เช่น 31/10/2569)
         "C3":  ib(6, 2),      # รหัสพนักงาน
         "C4":  ib(12, 3),     # ตำแหน่ง
         "L3":  ib(7, 2),      # ชื่อสกุล
@@ -288,6 +299,7 @@ def run_generate_payslips(gc, sheets_svc, target_file_id,
             parts      = bm_val.strip().split()
             month_name = parts[0] if parts else "ไม่ทราบ"
             year       = parts[1] if len(parts) > 1 else "2569"
+            month_num  = _THAI_MONTHS.get(month_name)
 
     slip_filename = f"Slip_{month_name}_{year}"
     log(f"Block: {latest_block} | {month_name} {year}", 10)
@@ -381,7 +393,8 @@ def run_generate_payslips(gc, sheets_svc, target_file_id,
 
         # Fill formulas (retry on rate limit)
         emp_ws   = slip_wb.worksheet(emp_name)
-        formulas = build_formulas(emp_name, latest_block)
+        formulas = build_formulas(emp_name, latest_block,
+                                  month_num=month_num, year_be=year)
         data     = [{"range": cell, "values": [[val]]}
                     for cell, val in formulas.items()]
         api_call_with_retry(lambda: emp_ws.batch_update(data, value_input_option="USER_ENTERED"))
