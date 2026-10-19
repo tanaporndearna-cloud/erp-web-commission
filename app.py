@@ -328,10 +328,27 @@ with st.expander("📋 วิธีใช้ก่อนกด (คลิกเ�
 """)
 
 # ── Input File ID ────────────────────────────────────────────────────────────
+# inject autocomplete=off เพื่อปิด browser suggestion
+st.markdown("""
+<style>
+input[data-testid="stTextInput-RootElement"],
+div[data-testid="stTextInput"] input {
+    autocomplete: off !important;
+}
+</style>
+<script>
+window.addEventListener('load', function() {
+    const inputs = window.parent.document.querySelectorAll('input[type="text"]');
+    inputs.forEach(el => el.setAttribute('autocomplete', 'off'));
+});
+</script>
+""", unsafe_allow_html=True)
+
 target_file_id = st.text_input(
     "📋 วาง File ID ของไฟล์ Slip (09Payslip_template)",
     placeholder="เช่น 1nr0100FNOa9UA-TpXfEvgA1uaoscD41C8sbl9HbHz_l",
     help="ID ของไฟล์ Google Sheets ที่มีชีต 'Template' — copy จาก URL ระหว่าง /d/ กับ /edit",
+    label_visibility="visible",
 )
 
 slip_btn = st.button(
