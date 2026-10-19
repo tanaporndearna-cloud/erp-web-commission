@@ -11,11 +11,15 @@ Usage (from Streamlit):
     file_name = run_generate_payslips(gc, sheets_svc, target_file_id, progress_cb)
 """
 import calendar
+import io
 import re
 import sys
 import time
+import zipfile
+import requests
 import gspread
 from google.oauth2.service_account import Credentials
+from google.auth.transport.requests import Request as GoogleAuthRequest
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -409,6 +413,177 @@ def run_generate_payslips(gc, sheets_svc, target_file_id,
 
     log(f"เสร็จสิ้น! ไฟล์: {slip_wb.title}", 100)
     return target_file_id, slip_wb.title
+
+
+# ── MONTH MAPPING ─────────────────────────────────────────────────────────────
+_MONTH_EN = {
+    1: "January", 2: "February",  3: "March",    4: "April",
+    5: "May",     6: "June",      7: "July",      8: "August",
+    9: "September", 10: "October", 11: "November", 12: "December",
+}
+
+_THAI_MONTH_NUM = {v: k for k, v in _THAI_MONTHS.items()}   # ชื่อไทย→เลข
+
+
+# ── EXPORT PDF ────────────────────────────────────────────────────────────────
+def export_payslip_pdfs(creds, target_file_id: str, progress_cb=None) -> bytes:
+    """
+    Export ชีตพนักงานทุกชีตใน Slip file เป็น PDF (A4 แนวตั้ง คอลัมน์ A-Q ไม่มีเส้นตาราง)
+    ใส่รหัสผ่านจาก Payroll Sheet L5 (match รหัสพนักงาน)
+    คืนค่าเป็น bytes ของไฟล์ ZIP
+
+    Requires:  pip install pikepdf requests
+    """
+    try:
+        import pikepdf
+    except ImportError:
+        raise RuntimeError("กรุณาติดตั้ง pikepdf ก่อนค่ะ: pip install pikepdf")
+
+    def log(msg, pct=None):
+        print(msg)
+        if progress_cb:
+            progress_cb(msg, pct)
+
+    # Refresh token เพื่อใช้ดาวน์โหลด PDF
+    creds.refresh(GoogleAuthRequest())
+    auth_headers = {"Authorization": f"Bearer {creds.token}"}
+
+    gc          = gspread.authorize(creds)
+    slip_wb     = gc.open_by_key(target_file_id)
+    payroll_wb  = gc.open_by_key(PAYROLL_SHEET_ID)
+
+    # ── รายชื่อชีตพนักงานใน Slip file ────────────────────────────────────────
+    all_sheets = slip_wb.worksheets()
+    emp_sheets = [s for s in all_sheets if re.match(r"^\d+_.+", s.title)]
+    log(f"พบชีตพนักงาน {len(emp_sheets)} ชีตใน Slip file", 5)
+
+    # ── อ่านรหัสผ่านจาก Payroll L5 (batch — 1 API call) ─────────────────────
+    log("กำลังอ่านรหัสผ่านจาก Payroll Sheet...", 8)
+    payroll_sheets = payroll_wb.worksheets()
+    pw_map = {}   # {emp_code: password}
+
+    # สร้าง list ชีตพนักงานใน Payroll พร้อม range L5
+    payroll_emp_sheets = [s for s in payroll_sheets if re.match(r"^\d+_.+", s.title)]
+    if payroll_emp_sheets:
+        try:
+            # batchGet ทีเดียว ประหยัด API call
+            from googleapiclient.discovery import build as _build_svc
+            _sheets_svc = _build_svc("sheets", "v4", credentials=creds)
+            ranges = [f"'{s.title}'!L5" for s in payroll_emp_sheets]
+            result = _sheets_svc.spreadsheets().values().batchGet(
+                spreadsheetId=PAYROLL_SHEET_ID,
+                ranges=ranges,
+            ).execute()
+            for s, vr in zip(payroll_emp_sheets, result.get("valueRanges", [])):
+                emp_code = s.title.split("_")[0].strip()
+                val = (vr.get("values") or [[]])[0]
+                if val and str(val[0]).strip():
+                    pw_map[emp_code] = str(val[0]).strip()
+        except Exception as e:
+            log(f"  ⚠️ batchGet ไม่สำเร็จ fallback รายตัว ({e})", None)
+            for s in payroll_emp_sheets:
+                emp_code = s.title.split("_")[0].strip()
+                try:
+                    val = api_call_with_retry(lambda ws=s: ws.acell("L5").value)
+                    if val and str(val).strip():
+                        pw_map[emp_code] = str(val).strip()
+                except Exception:
+                    pass
+    log(f"อ่านรหัสผ่านได้ {len(pw_map)} คน", 12)
+
+    # ── ดึงชื่อเดือน/ปีจาก C2 ของชีตพนักงานแรกใน Slip ─────────────────────
+    # C2 = วันที่จ่าย เช่น "31/10/2569" ที่เราเซ็ตไว้ใน build_formulas
+    month_en = "Payslip"
+    year_be  = ""
+    if emp_sheets:
+        try:
+            c2_val = api_call_with_retry(lambda ws=emp_sheets[0]: ws.acell("C2").value) or ""
+            # รูปแบบ DD/MM/YYYY หรือ DD/MM/YYYY
+            m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", str(c2_val))
+            if m:
+                mn       = int(m.group(2))
+                year_be  = m.group(3)
+                month_en = _MONTH_EN.get(mn, str(mn))
+        except Exception:
+            pass
+
+    # ── Export + ใส่รหัสผ่าน + ZIP ──────────────────────────────────────────
+    zip_buf  = io.BytesIO()
+    ok_count = 0
+    err_list = []
+
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        total = len(emp_sheets)
+        for idx, ws in enumerate(emp_sheets, 1):
+            emp_code = ws.title.split("_")[0].strip()
+            emp_name = ws.title  # ใช้ชื่อชีตเป็นชื่อไฟล์
+
+            pct = int(15 + (idx / total) * 80)
+            log(f"[{idx}/{total}] Export PDF: {ws.title}", pct)
+
+            # URL export PDF: A4 portrait, col A-Q (0-16), ไม่มีเส้นตาราง
+            export_url = (
+                f"https://docs.google.com/spreadsheets/d/{target_file_id}/export"
+                f"?format=pdf"
+                f"&gid={ws.id}"
+                f"&size=A4"
+                f"&portrait=true"
+                f"&fitw=true"
+                f"&gridlines=false"
+                f"&printtitle=false"
+                f"&sheetnames=false"
+                f"&pagenum=UNDEFINED"
+                f"&fzr=false"
+                f"&c1=0&c2=16"      # คอลัมน์ A(0) ถึง Q(16)
+            )
+
+            try:
+                resp = requests.get(export_url, headers=auth_headers, timeout=60)
+                if resp.status_code != 200:
+                    err_list.append(f"{ws.title}: HTTP {resp.status_code}")
+                    continue
+                pdf_bytes = resp.content
+            except Exception as e:
+                err_list.append(f"{ws.title}: download error — {e}")
+                continue
+
+            # ใส่รหัสผ่าน
+            password = pw_map.get(emp_code, "")
+            if password:
+                try:
+                    in_buf  = io.BytesIO(pdf_bytes)
+                    out_buf = io.BytesIO()
+                    with pikepdf.open(in_buf) as pdf:
+                        pdf.save(
+                            out_buf,
+                            encryption=pikepdf.Encryption(
+                                owner=password,
+                                user=password,
+                                R=4,
+                            )
+                        )
+                    out_buf.seek(0)
+                    pdf_bytes = out_buf.getvalue()
+                except Exception as e:
+                    err_list.append(f"{ws.title}: pikepdf error — {e}")
+                    # ยังคงเพิ่มไฟล์ที่ไม่มีรหัสผ่านไว้ก่อน
+            else:
+                log(f"  ⚠️ {ws.title}: ไม่พบรหัสผ่านใน Payroll L5", None)
+
+            # ตั้งชื่อไฟล์ Slip_{month_en}_{year_be}_{emp_code}_{ชื่อพนักงาน}.pdf
+            safe_title = re.sub(r'[\\/*?:"<>|]', "_", ws.title)
+            pdf_filename = f"Slip_{month_en}_{year_be}_{safe_title}.pdf"
+            zf.writestr(pdf_filename, pdf_bytes)
+            ok_count += 1
+
+            time.sleep(0.3)   # ป้องกัน rate limit
+
+    zip_buf.seek(0)
+    log(f"✅ Export PDF เสร็จ {ok_count} ไฟล์", 98)
+    if err_list:
+        log(f"⚠️ มีข้อผิดพลาด {len(err_list)} รายการ: " + "; ".join(err_list[:5]), None)
+
+    return zip_buf.getvalue(), month_en, year_be
 
 
 # ── MAIN (standalone) ─────────────────────────────────────────────────────────
