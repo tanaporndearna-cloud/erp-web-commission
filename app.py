@@ -275,7 +275,6 @@ st.divider()
 
 # เชื่อม gspread สำหรับ Payroll (lazy — เชื่อมเฉพาะตอนที่จะใช้)
 PAYROLL_SHEET_ID  = "1oWaO8U1nNItgozvdSAcfN6QC-Ih78d0H9n5mJRfK6W4"
-PAYROLL_HIST_ID   = "1UMB2LlO_8BKevg_dvIrNmFeBpOG0OadUrYcgejBzPA4"
 
 @st.cache_resource
 def get_gspread_client():
@@ -299,7 +298,7 @@ try:
         st.error("❌ ไม่พบ credentials.json — กรุณาวางไฟล์ Service Account ในโฟลเดอร์เดียวกับ app.py")
         st.info("วิธีตั้งค่า: ไปที่ Google Cloud Console → Service Accounts → สร้าง Key (JSON) → วางไฟล์ชื่อ credentials.json")
     else:
-        render_payroll_page(gc, PAYROLL_SHEET_ID, history_db_id=PAYROLL_HIST_ID)
+        render_payroll_page(gc, PAYROLL_SHEET_ID)
 except ImportError:
     st.subheader("💰 จัดการเงินเดือน")
     st.warning("⚠️ ไม่พบ payroll_page.py — กรุณาวางไฟล์ในโฟลเดอร์เดียวกับ app.py")
@@ -330,9 +329,9 @@ with st.expander("📋 วิธีใช้ก่อนกด (คลิกเ�
 
 # ── Input File ID ────────────────────────────────────────────────────────────
 target_file_id = st.text_input(
-    "📋 วาง File ID ของไฟล์ Slip ที่สร้างไว้",
-    placeholder="เช่น 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms",
-    help="ID ของไฟล์ Google Sheets ที่ copy จาก Template แล้ว share ให้ Service Account แล้ว",
+    "📋 วาง File ID ของไฟล์ Slip (09Payslip_template)",
+    placeholder="เช่น 1nr0100FNOa9UA-TpXfEvgA1uaoscD41C8sbl9HbHz_l",
+    help="ID ของไฟล์ Google Sheets ที่มีชีต 'Template' — copy จาก URL ระหว่าง /d/ กับ /edit",
 )
 
 slip_btn = st.button(
@@ -372,6 +371,7 @@ if slip_btn:
                 gc=slip_gc,
                 sheets_svc=slip_sheets,
                 target_file_id=file_id_clean,
+                template_sheet_id=file_id_clean,
                 progress_cb=slip_progress,
             )
 
