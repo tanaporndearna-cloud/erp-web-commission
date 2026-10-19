@@ -411,6 +411,72 @@ if slip_btn:
         st.exception(e)
 
 
+# ===== PDF Export Section =====
+st.divider()
+st.subheader("📄 ออก PDF สลีปเงินเดือน")
+st.caption("Export ทุกชีตพนักงานเป็น PDF (A4 แนวตั้ง คอลัมน์ A–Q ไม่มีเส้น) พร้อมรหัสผ่านจาก Payroll L5")
+
+pdf_file_id = st.text_input(
+    "📋 วาง File ID ของไฟล์ Slip ที่ต้องการ Export PDF",
+    placeholder="เช่น 1nr0100FNOa9UA-TpXfEvgA1uaoscD41C8sbl9HbHz_l",
+    key="pdf_file_id_input",
+    label_visibility="visible",
+)
+
+pdf_btn = st.button(
+    "📄 Export PDF (ZIP)",
+    type="primary",
+    use_container_width=True,
+    disabled=not bool(pdf_file_id and pdf_file_id.strip()),
+)
+
+if pdf_btn:
+    pdf_file_id_clean = pdf_file_id.strip()
+    try:
+        from google.oauth2.service_account import Credentials as SACredentials
+        from generate_payslips import export_payslip_pdfs
+
+        SLIP_SCOPES = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds_dict  = dict(st.secrets["gcp_service_account"])
+        pdf_creds   = SACredentials.from_service_account_info(creds_dict, scopes=SLIP_SCOPES)
+
+        pdf_status   = st.empty()
+        pdf_progress = st.progress(0)
+
+        def pdf_progress_cb(msg, pct=None):
+            pdf_status.info(f"⏳ {msg}")
+            if pct is not None:
+                pdf_progress.progress(min(int(pct), 100))
+
+        with st.spinner("กำลัง Export PDF..."):
+            zip_bytes, month_en, year_be = export_payslip_pdfs(
+                creds=pdf_creds,
+                target_file_id=pdf_file_id_clean,
+                progress_cb=pdf_progress_cb,
+            )
+
+        pdf_progress.progress(100)
+        zip_name = f"Slip_{month_en}_{year_be}.zip"
+        pdf_status.success(f"✅ Export PDF เสร็จแล้วค่ะ! — {zip_name}")
+
+        st.download_button(
+            label=f"⬇️ ดาวน์โหลด {zip_name}",
+            data=zip_bytes,
+            file_name=zip_name,
+            mime="application/zip",
+            use_container_width=True,
+        )
+
+    except ValueError as e:
+        st.error(f"❌ {e}")
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาด: {e}")
+        st.exception(e)
+
+
 # ===== Footer =====
 st.divider()
 st.caption("TRC Motorsport · Commission Calculator · Powered by Streamlit")
