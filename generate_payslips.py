@@ -204,7 +204,7 @@ def build_formulas(emp_name: str, block_n: int,
         "P9":  "=M9",          # ค่าล่วงเวลา (บาท)
 
         # คอมมิชชั่นจากการสอบ — แยกเพิ่ม/ลด ตาม grade
-        "M10": f"=IF({cond_abc},{grade_ir},\"\")",   # เกรด A/B/C → แสดงใน income
+        "M10": f"=IF({cond_abc},{grade_ir},\"0.00\")",   # เกรด A/B/C → แสดงใน income
         "P10": f"=IF({cond_abc},{amt_ir},0)",
 
         "P11": ib_num(10, 58),    # ค่าคอมฯหน้าร้าน
@@ -232,7 +232,7 @@ def build_formulas(emp_name: str, block_n: int,
         "P18": "=IF(M18<4,0,(M18-3)*50)",
 
         # คอมมิชชั่นลดจากการสอบ — grade D/E → แสดงใน deduction
-        "M19": f"=IF({cond_de},{grade_ir},\"\")",
+        "M19": f"=IF({cond_de},{grade_ir},\"0.00\")",
         "P19": f"=IF({cond_de},{amt_ir},0)",
 
         "P20": "0.00",         # หักสินค้าเสียหาย — เว้นว่าง
