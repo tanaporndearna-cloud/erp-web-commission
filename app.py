@@ -319,7 +319,7 @@ with st.expander("📋 วิธีใช้ก่อนกด (คลิกเ�
 3. ตั้งชื่อไฟล์ใหม่ เช่น `Slip_ตุลาคม_2569`
 4. Share ไฟล์นั้นให้ Service Account:
    - คลิกขวาที่ไฟล์ → **Share**
-   - เพิ่ม email: `erp-streamlit@erp-commission.iam.gserviceaccount.com`
+   - เพิ่ม email: `om5-trc@my-project-salary-2026.iam.gserviceaccount.com`
    - สิทธิ์: **Editor**
 5. เปิดไฟล์ → Copy **File ID** จาก URL
    - URL ตัวอย่าง: `https://docs.google.com/spreadsheets/d/`**`1ABC...xyz`**`/edit`
