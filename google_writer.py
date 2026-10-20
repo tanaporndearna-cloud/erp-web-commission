@@ -6,7 +6,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import streamlit as st
 
-SHEET_ID = "1CkK7KZS0J_GzSAB46Xxh4dP_BVKRdx1GtbUHM9ZwikQ"
+SHEET_ID = "15CZo4c5BU5pxZIAjYahjmIEI4bXnH1RrtUe1Z-NwRzY"
 SHEET_COM_ERP = "Com ERP"
 SHEET_SUMMARIZE = "สรุปCom"
 
