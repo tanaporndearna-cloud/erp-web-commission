@@ -351,12 +351,21 @@ target_file_id = st.text_input(
     label_visibility="visible",
 )
 
-slip_btn = st.button(
-    "🧾 เติมข้อมูล Slip",
-    type="primary",
-    use_container_width=True,
-    disabled=not bool(target_file_id and target_file_id.strip()),
-)
+_col1, _col2 = st.columns(2)
+with _col1:
+    slip_btn = st.button(
+        "🧾 เติมข้อมูล Slip",
+        type="primary",
+        use_container_width=True,
+        disabled=not bool(target_file_id and target_file_id.strip()),
+    )
+with _col2:
+    pdf_btn = st.button(
+        "📄 Export PDF (ZIP)",
+        type="primary",
+        use_container_width=True,
+        disabled=not bool(target_file_id and target_file_id.strip()),
+    )
 
 if slip_btn:
     file_id_clean = target_file_id.strip()
@@ -412,26 +421,8 @@ if slip_btn:
 
 
 # ===== PDF Export Section =====
-st.divider()
-st.subheader("📄 ออก PDF สลีปเงินเดือน")
-st.caption("Export ทุกชีตพนักงานเป็น PDF (A4 แนวตั้ง คอลัมน์ A–Q ไม่มีเส้น) พร้อมรหัสผ่านจาก Payroll L5")
-
-pdf_file_id = st.text_input(
-    "📋 วาง File ID ของไฟล์ Slip ที่ต้องการ Export PDF",
-    placeholder="เช่น 1nr0100FNOa9UA-TpXfEvgA1uaoscD41C8sbl9HbHz_l",
-    key="pdf_file_id_input",
-    label_visibility="visible",
-)
-
-pdf_btn = st.button(
-    "📄 Export PDF (ZIP)",
-    type="primary",
-    use_container_width=True,
-    disabled=not bool(pdf_file_id and pdf_file_id.strip()),
-)
-
 if pdf_btn:
-    pdf_file_id_clean = pdf_file_id.strip()
+    pdf_file_id_clean = target_file_id.strip()
     try:
         from google.oauth2.service_account import Credentials as SACredentials
         from generate_payslips import export_payslip_pdfs
