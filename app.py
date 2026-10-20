@@ -274,7 +274,7 @@ if mark_h_btn:
 st.divider()
 
 # เชื่อม gspread สำหรับ Payroll (lazy — เชื่อมเฉพาะตอนที่จะใช้)
-PAYROLL_SHEET_ID  = "1oWaO8U1nNItgozvdSAcfN6QC-Ih78d0H9n5mJRfK6W4"
+PAYROLL_SHEET_ID  = "1x32_CtmkUFbhAHOJNVt2qBFbuIH0F8FQj5uEhLxqG6w"
 
 @st.cache_resource
 def get_gspread_client():
