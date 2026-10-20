@@ -289,7 +289,7 @@ def _update_salary_summary(ss: "gspread.Spreadsheet", auto_month: int, auto_year
     BLOCK_COL7_OFF  = 6
     BLOCK_COL10_OFF = 9
     SALARY_SHEET    = "Salary"
-    DATA_START_ROW  = 8
+    DATA_START_ROW  = 9
 
     def block_col(n, offset):
         return BLOCK_FIRST_COL + (n - 1) * BLOCK_WIDTH + offset
