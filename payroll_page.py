@@ -423,8 +423,11 @@ def _update_salary_summary(ss: "gspread.Spreadsheet", auto_month: int, auto_year
             u_formula = ref(sh, block_col(latest_block, BLOCK_COL7_OFF), ROW_BASE)
             v_formula = ref(sh, com_col_n, ROW_BASE)
 
-            upd.append({"range": f"F{row_num}:K{row_num}",
-                        "values": [[f_formula, g_formula, "", i_formula, j_formula, k_formula]]})
+            upd.append({"range": f"F{row_num}:G{row_num}",
+                        "values": [[f_formula, g_formula]]})
+            # ไม่เขียน H — ผู้ใช้ใส่สูตร =(G-F)/F ไว้เองใน sheet
+            upd.append({"range": f"I{row_num}:K{row_num}",
+                        "values": [[i_formula, j_formula, k_formula]]})
             upd.append({"range": f"U{row_num}:V{row_num}",
                         "values": [[u_formula, v_formula]]})
 
