@@ -453,7 +453,7 @@ def render_payroll_page(gc: gspread.Client,
     sheet_id      = Google Sheet ID ของไฟล์เทมเพลตเงินเดือน
     history_db_id = Google Sheet ID ของฐานเก็บประวัติเงินเดือน (None = ไม่บันทึก DB)
     """
-    st.header("👷 จัดการเงินเดือนรายเดือน")
+    st.header("💰 ระบบทำเงินเดือนพนักงาน")
 
     try:
         ss = _sheets_retry(gc.open_by_key, sheet_id)
