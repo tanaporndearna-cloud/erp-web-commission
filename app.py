@@ -9,13 +9,12 @@ from datetime import date
 
 # ===== Page Config =====
 st.set_page_config(
-    page_title="TRC Commission Calculator",
-    page_icon="🏎️",
+    page_title="TRC Payroll Management",
+    page_icon="🚘",
     layout="centered",
 )
 
-st.title("🏎️ TRC Commission Calculator")
-st.caption("อัปโหลดไฟล์ ERP → คิดค่าคอม → เขียนลง Google Sheet อัตโนมัติ")
+st.title("🚘 TRC Payroll Management")
 
 # ===== Sidebar Settings =====
 with st.sidebar:
@@ -33,7 +32,7 @@ with st.sidebar:
     st.divider()
 
 # ===== File Upload =====
-st.subheader("📁 อัปโหลดไฟล์")
+st.subheader("📁 ระบบคิดค่าคอมพนักงานหน้าร้าน")
 col1, col2 = st.columns(2)
 with col1:
     erp_file = st.file_uploader(
@@ -294,20 +293,19 @@ try:
     from payroll_page import render_payroll_page
     gc = get_gspread_client()
     if gc is None:
-        st.subheader("💰 จัดการเงินเดือน")
+        st.subheader("💰 ระบบทำเงินเดือนพนักงาน")
         st.error("❌ ไม่พบ credentials.json — กรุณาวางไฟล์ Service Account ในโฟลเดอร์เดียวกับ app.py")
         st.info("วิธีตั้งค่า: ไปที่ Google Cloud Console → Service Accounts → สร้าง Key (JSON) → วางไฟล์ชื่อ credentials.json")
     else:
         render_payroll_page(gc, PAYROLL_SHEET_ID)
 except ImportError:
-    st.subheader("💰 จัดการเงินเดือน")
+    st.subheader("💰 ระบบทำเงินเดือนพนักงาน")
     st.warning("⚠️ ไม่พบ payroll_page.py — กรุณาวางไฟล์ในโฟลเดอร์เดียวกับ app.py")
 
 
 # ===== Payslip Section =====
 st.divider()
-st.subheader("🧾 สร้างสลีปเงินเดือน")
-st.caption("เติมข้อมูลลงในไฟล์ Slip ที่สร้างไว้แล้ว พร้อมสูตร IMPORTRANGE อัตโนมัติ")
+st.subheader("🧾 ระบบทำสลิปเงินเดือนพนักงาน")
 
 # ── คำแนะนำวิธีใช้ ──────────────────────────────────────────────────────────
 with st.expander("📋 วิธีใช้ก่อนกด (คลิกเพื่อดู)", expanded=False):
@@ -328,7 +326,6 @@ with st.expander("📋 วิธีใช้ก่อนกด (คลิกเ�
 """)
 
 # ── Input File ID ────────────────────────────────────────────────────────────
-# inject autocomplete=off เพื่อปิด browser suggestion
 st.markdown("""
 <style>
 input[data-testid="stTextInput-RootElement"],
@@ -476,4 +473,4 @@ if pdf_btn:
 
 # ===== Footer =====
 st.divider()
-st.caption("TRC Motorsport · Commission Calculator · Powered by Streamlit")
+st.caption("TRC Motorsport · Payroll Management · Powered by Streamlit")
