@@ -43,7 +43,7 @@ with col1:
 with col2:
     pps_file = st.file_uploader(
         "ไฟล์ PPS (ถ้ามี)",
-        type=["xlsx"],
+        type=["xlsx", "xls"],
         help="PPS.xlsx ข้อมูลราคาสินค้า (ถ้าไม่มีจะใช้จากไฟล์ ERP)"
     )
 
