@@ -1,85 +1,159 @@
 """
-อ่านไฟล์ PPS.xlsx (export จากระบบ) แล้ว inject เป็นชีต PPS มาตรฐานใน ERP xlsx
-
-โครงสร้าง output ชีต PPS:
-  Col A  Product Code       ← source col C
-  Col B  Description        ← source col D
-  Col C  Category           ← source col B
-  Col D  (ว่าง)
-  Col E  Branch Province    ← source col O (15)
-  Col F  Retail Price       ← source col P (16)
-  Col G  Wholesale General  ← source col T (20)
-  Col H  P Retail Price     = =IF(E{r}>0,E{r},F{r})
-  Col I  Wholesale General P = =(G{r}+H{r})/2
-
-ชีต PPS เดิมในไฟล์ ERP (ถ้ามี) จะถูก replace ด้วยชีตนี้
-ชีตใหม่จะชื่อ "PPS" เสมอ (ไม่ขึ้นกับเดือน)
+อ่านไฟล์ PPS (รองรับ .xlsx, .xls binary, และ .xls ที่จริงเป็น TSV)
+แล้ว inject เป็นชีต PPS มาตรฐานใน ERP xlsx
 
 Usage:
-    python3 build_pps.py <pps_source.xlsx> <erp_working.xlsx> <output.xlsx>
+    python3 build_pps.py <pps_source.xlsx|xls> <erp_working.xlsx> <output.xlsx>
 """
 import sys
-import os
-import subprocess
-import tempfile
+import csv
+import io
 import openpyxl
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Font
 
-PPS_PATH = sys.argv[1]   # PPS.xlsx หรือ PPS.xls จากระบบ
-ERP_PATH = sys.argv[2]   # ไฟล์ ERP ที่ผ่าน decrypt แล้ว
-OUT_PATH = sys.argv[3]   # output
+PPS_PATH = sys.argv[1]
+ERP_PATH = sys.argv[2]
+OUT_PATH = sys.argv[3]
 
-# --- แปลง .xls → .xlsx ถ้าจำเป็น ---
-def ensure_xlsx(path):
-    """ถ้าไฟล์เป็น .xls ให้แปลงเป็น .xlsx ด้วย LibreOffice แล้วคืน path ใหม่"""
-    if path.lower().endswith('.xls'):
-        print(f'Detected .xls format — converting to .xlsx via LibreOffice...')
-        tmp_dir = tempfile.mkdtemp()
-        result = subprocess.run(
-            ['soffice', '--headless', '--convert-to', 'xlsx', '--outdir', tmp_dir, path],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f'LibreOffice conversion failed:\n{result.stderr}')
-        base = os.path.splitext(os.path.basename(path))[0]
-        converted = os.path.join(tmp_dir, base + '.xlsx')
-        if not os.path.exists(converted):
-            raise FileNotFoundError(f'Converted file not found: {converted}')
-        print(f'  Converted to: {converted}')
-        return converted
-    return path
 
-# --- อ่านข้อมูลจาก PPS (รองรับทั้ง .xlsx และ .xls) ---
-print(f'Reading PPS source: {PPS_PATH}')
-PPS_PATH = ensure_xlsx(PPS_PATH)
-pps_wb = openpyxl.load_workbook(PPS_PATH, data_only=True)
-pps_ws = pps_wb.active
+# ── Cell wrapper สำหรับข้อมูลที่อ่านจาก TSV / xlrd ──
+class _Cell:
+    def __init__(self, value):
+        self.value = value
+
+
+class ListSheetWrapper:
+    """ห่อ list-of-lists ให้ใช้ .cell(row, col) แบบ openpyxl"""
+    def __init__(self, rows):
+        self._rows = rows
+        self.max_row = len(rows)
+        self.max_column = max((len(r) for r in rows), default=0)
+
+    def cell(self, row, column):
+        r, c = row - 1, column - 1
+        if r < 0 or r >= len(self._rows):
+            return _Cell(None)
+        row_data = self._rows[r]
+        if c < 0 or c >= len(row_data):
+            return _Cell(None)
+        v = row_data[c]
+        # แปลง string ตัวเลขเป็น int/float
+        if isinstance(v, str):
+            v = v.strip()
+            if v == '':
+                v = None
+            else:
+                try:
+                    v = int(v)
+                except ValueError:
+                    try:
+                        v = float(v)
+                    except ValueError:
+                        pass
+        return _Cell(v)
+
+
+def read_pps(path):
+    """อ่าน PPS รองรับ .xlsx, real-.xls, และ TSV-disguised-as-.xls"""
+    is_xls = path.lower().endswith('.xls')
+
+    # ── ลอง openpyxl ก่อน (ใช้ได้กับ .xlsx หรือ .xls ที่จริงเป็น xlsx) ──
+    if not is_xls:
+        wb = openpyxl.load_workbook(path, data_only=True)
+        ws = wb.active
+        print(f'  {ws.max_row} rows (openpyxl)')
+        return ws
+
+    # ── ลอง xlrd (real Excel binary .xls) ──
+    try:
+        import xlrd
+        book = xlrd.open_workbook(path)
+        sheet = book.sheets()[0]
+        print(f'  {sheet.nrows} rows (xlrd binary)')
+
+        class XlsWrapper:
+            def __init__(self, s):
+                self._s = s
+                self.max_row = s.nrows
+                self.max_column = s.ncols
+            def cell(self, row, column):
+                r, c = row - 1, column - 1
+                if r < 0 or r >= self._s.nrows or c < 0 or c >= self._s.ncols:
+                    return _Cell(None)
+                v = self._s.cell_value(r, c)
+                if isinstance(v, float) and v == int(v):
+                    v = int(v)
+                if v == '':
+                    v = None
+                return _Cell(v)
+        return XlsWrapper(sheet)
+
+    except Exception:
+        pass  # ไม่ใช่ binary xls → ลอง TSV
+
+    # ── TSV / CSV text file ที่ตั้งนามสกุล .xls ──
+    for enc in ('cp874', 'utf-8-sig', 'utf-8', 'iso-8859-1'):
+        try:
+            with open(path, encoding=enc, newline='') as f:
+                sample = f.read(1024)
+            # ตรวจว่าเป็น tab-separated หรือ comma-separated
+            dialect = 'excel-tab' if sample.count('\t') > sample.count(',') else 'excel'
+            rows = []
+            with open(path, encoding=enc, newline='') as f:
+                reader = csv.reader(f, dialect=dialect)
+                for row in reader:
+                    rows.append(row)
+            if rows:
+                print(f'  {len(rows)} rows (TSV/CSV, encoding={enc})')
+                return ListSheetWrapper(rows)
+        except Exception:
+            continue
+
+    raise RuntimeError(f'ไม่สามารถอ่านไฟล์ PPS: {path}')
+
+
+# ── อ่าน PPS ──
+print(f'Reading PPS: {PPS_PATH}')
+pps_ws = read_pps(PPS_PATH)
 pps_last = pps_ws.max_row
-print(f'  {pps_last} rows, {pps_ws.max_column} cols')
 
-# source column index (1-based)
-SRC_PRODUCT_CODE    = 3   # C
-SRC_DESCRIPTION     = 4   # D
-SRC_CATEGORY        = 2   # B
-SRC_BRANCH_PROVINCE = 15  # O
-SRC_RETAIL_PRICE    = 16  # P
-SRC_WHOLESALE_GEN   = 20  # T
+# ── auto-detect column จาก header ──
+HEADER_MAP = {
+    'Product Code':      'product_code',
+    'Description':       'description',
+    'Category':          'category',
+    'Branch Province':   'branch_province',
+    'Retail Price':      'retail_price',
+    'Wholesale General': 'wholesale_gen',
+}
+col_idx = {}
+for c in range(1, pps_ws.max_column + 1):
+    h = pps_ws.cell(row=1, column=c).value
+    if h and str(h).strip() in HEADER_MAP:
+        col_idx[HEADER_MAP[str(h).strip()]] = c
 
-# --- โหลดไฟล์ ERP ---
-print(f'Loading ERP file: {ERP_PATH}')
+SRC_PRODUCT_CODE    = col_idx.get('product_code',    3)
+SRC_DESCRIPTION     = col_idx.get('description',     4)
+SRC_CATEGORY        = col_idx.get('category',        2)
+SRC_BRANCH_PROVINCE = col_idx.get('branch_province', 15)
+SRC_RETAIL_PRICE    = col_idx.get('retail_price',    16)
+SRC_WHOLESALE_GEN   = col_idx.get('wholesale_gen',   20)
+
+print(f'  Columns: ProductCode={SRC_PRODUCT_CODE}, Desc={SRC_DESCRIPTION}, '
+      f'Cat={SRC_CATEGORY}, BranchProv={SRC_BRANCH_PROVINCE}, '
+      f'Retail={SRC_RETAIL_PRICE}, Wholesale={SRC_WHOLESALE_GEN}')
+
+# ── โหลด ERP ──
+print(f'Loading ERP: {ERP_PATH}')
 wb = openpyxl.load_workbook(ERP_PATH)
 
-# ลบชีต PPS เดิม (ถ้ามี)
-for name in wb.sheetnames:
+for name in list(wb.sheetnames):
     if 'pps' in name.lower():
         del wb[name]
         print(f'  Removed old sheet: "{name}"')
 
-# สร้างชีต PPS ใหม่
 ws = wb.create_sheet('PPS')
-print(f'  Created new sheet "PPS"')
 
-# header row
 HEADERS = ['Product Code', 'Description', 'Category', '',
            'Branch Province', 'Retail Price', 'Wholesale General',
            'P Retail Price', 'Wholesale General P']
@@ -88,17 +162,13 @@ for c, h in enumerate(HEADERS, 1):
     if h:
         cell.font = Font(bold=True)
 
-# เขียนข้อมูล (ข้ามแถว header ของ source = row 1)
 out_row = 2
 for r in range(2, pps_last + 1):
-    # ข้ามแถวที่ Product Code ว่าง
     if pps_ws.cell(row=r, column=SRC_PRODUCT_CODE).value is None:
         continue
-
     ws.cell(row=out_row, column=1, value=pps_ws.cell(row=r, column=SRC_PRODUCT_CODE).value)
     ws.cell(row=out_row, column=2, value=pps_ws.cell(row=r, column=SRC_DESCRIPTION).value)
     ws.cell(row=out_row, column=3, value=pps_ws.cell(row=r, column=SRC_CATEGORY).value)
-    # col D ว่าง
     ws.cell(row=out_row, column=5, value=pps_ws.cell(row=r, column=SRC_BRANCH_PROVINCE).value)
     ws.cell(row=out_row, column=6, value=pps_ws.cell(row=r, column=SRC_RETAIL_PRICE).value)
     ws.cell(row=out_row, column=7, value=pps_ws.cell(row=r, column=SRC_WHOLESALE_GEN).value)
@@ -106,8 +176,6 @@ for r in range(2, pps_last + 1):
     ws.cell(row=out_row, column=9, value=f'=(G{out_row}+H{out_row})/2')
     out_row += 1
 
-data_rows = out_row - 2
-print(f'  Written {data_rows} data rows to "PPS"')
-
+print(f'  Written {out_row - 2} rows to "PPS"')
 wb.save(OUT_PATH)
-print(f'saved {OUT_PATH}')
+print(f'Saved: {OUT_PATH}')
