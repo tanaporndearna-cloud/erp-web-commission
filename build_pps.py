@@ -19,15 +19,39 @@ Usage:
     python3 build_pps.py <pps_source.xlsx> <erp_working.xlsx> <output.xlsx>
 """
 import sys
+import os
+import subprocess
+import tempfile
 import openpyxl
 from openpyxl.styles import Font, PatternFill
 
-PPS_PATH = sys.argv[1]   # PPS.xlsx จากระบบ
+PPS_PATH = sys.argv[1]   # PPS.xlsx หรือ PPS.xls จากระบบ
 ERP_PATH = sys.argv[2]   # ไฟล์ ERP ที่ผ่าน decrypt แล้ว
 OUT_PATH = sys.argv[3]   # output
 
-# --- อ่านข้อมูลจาก PPS.xlsx ---
+# --- แปลง .xls → .xlsx ถ้าจำเป็น ---
+def ensure_xlsx(path):
+    """ถ้าไฟล์เป็น .xls ให้แปลงเป็น .xlsx ด้วย LibreOffice แล้วคืน path ใหม่"""
+    if path.lower().endswith('.xls'):
+        print(f'Detected .xls format — converting to .xlsx via LibreOffice...')
+        tmp_dir = tempfile.mkdtemp()
+        result = subprocess.run(
+            ['soffice', '--headless', '--convert-to', 'xlsx', '--outdir', tmp_dir, path],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f'LibreOffice conversion failed:\n{result.stderr}')
+        base = os.path.splitext(os.path.basename(path))[0]
+        converted = os.path.join(tmp_dir, base + '.xlsx')
+        if not os.path.exists(converted):
+            raise FileNotFoundError(f'Converted file not found: {converted}')
+        print(f'  Converted to: {converted}')
+        return converted
+    return path
+
+# --- อ่านข้อมูลจาก PPS (รองรับทั้ง .xlsx และ .xls) ---
 print(f'Reading PPS source: {PPS_PATH}')
+PPS_PATH = ensure_xlsx(PPS_PATH)
 pps_wb = openpyxl.load_workbook(PPS_PATH, data_only=True)
 pps_ws = pps_wb.active
 pps_last = pps_ws.max_row
