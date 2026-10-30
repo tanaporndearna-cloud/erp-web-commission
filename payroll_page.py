@@ -283,6 +283,7 @@ def _update_salary_summary(ss: "gspread.Spreadsheet", auto_month: int, auto_year
     BLOCK_FIRST_COL = 27
     BLOCK_WIDTH     = 13
     ROW_SALARY      = 56
+    ROW_SALARY_PREV = 65   # n-1, n-2 ใช้แถวนี้แทน
     ROW_COM_START   = 58
     ROW_COM_END     = 63
     ROW_BASE        = 44
@@ -381,8 +382,8 @@ def _update_salary_summary(ss: "gspread.Spreadsheet", auto_month: int, auto_year
         com_col_l = col_letter(com_col_n)
 
         # ── Row 1: ป้ายแหล่งที่มาของแต่ละคอลัมน์ ──────────────────────────
-        f1_label = col_letter(block_col(latest_block - 2, BLOCK_COL10_OFF)) + str(ROW_SALARY) if latest_block >= 3 else ""
-        g1_label = col_letter(block_col(latest_block - 1, BLOCK_COL10_OFF)) + str(ROW_SALARY) if latest_block >= 2 else ""
+        f1_label = col_letter(block_col(latest_block - 2, BLOCK_COL10_OFF)) + str(ROW_SALARY_PREV) if latest_block >= 3 else ""
+        g1_label = col_letter(block_col(latest_block - 1, BLOCK_COL10_OFF)) + str(ROW_SALARY_PREV) if latest_block >= 2 else ""
         i1_label = com_col_l + str(ROW_SALARY)
         j1_label = f"SUM({com_col_l}{ROW_COM_START}:{com_col_l}{ROW_COM_END})"
 
@@ -415,8 +416,8 @@ def _update_salary_summary(ss: "gspread.Spreadsheet", auto_month: int, auto_year
                 continue
             sh = emp_ws_map[emp_id].title
 
-            f_formula = ref(sh, block_col(latest_block-2, BLOCK_COL10_OFF), ROW_SALARY) if latest_block >= 3 else "0"
-            g_formula = ref(sh, block_col(latest_block-1, BLOCK_COL10_OFF), ROW_SALARY) if latest_block >= 2 else "0"
+            f_formula = ref(sh, block_col(latest_block-2, BLOCK_COL10_OFF), ROW_SALARY_PREV) if latest_block >= 3 else "0"
+            g_formula = ref(sh, block_col(latest_block-1, BLOCK_COL10_OFF), ROW_SALARY_PREV) if latest_block >= 2 else "0"
             i_formula = ref(sh, com_col_n, ROW_SALARY)
             j_formula = f"=IFERROR(SUM('{sh}'!{com_col_l}{ROW_COM_START}:{com_col_l}{ROW_COM_END}),0)"
             k_formula = f"=I{row_num}+J{row_num}"
