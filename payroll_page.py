@@ -285,7 +285,7 @@ def _update_salary_summary(ss: "gspread.Spreadsheet", auto_month: int, auto_year
     ROW_SALARY      = 56
     ROW_SALARY_PREV = 65   # n-1, n-2 ใช้แถวนี้แทน
     ROW_COM_START   = 58
-    ROW_COM_END     = 63
+    ROW_COM_END     = 64
     ROW_BASE        = 44
     BLOCK_COL7_OFF  = 6
     BLOCK_COL10_OFF = 9
