@@ -685,6 +685,31 @@ def render_payroll_page(gc: gspread.Client,
                      key="btn_freeze_only", use_container_width=True):
             _freeze_history_standalone(_fz_all_pairs, ss)
 
+        # ── สรุป Salary ใหม่ (ไม่ต้องอัปโหลดไฟล์) ──────────────────
+        st.divider()
+        st.caption("📊 สรุปชีต Salary ใหม่ — ใช้เมื่อข้อมูลในชีต Salary หายหรือถูกลบ ไม่ต้องรันเงินเดือนใหม่")
+
+        import datetime as _dt2
+        _now2   = _dt2.date.today()
+        _def_m2 = _now2.month
+        _def_y2 = _now2.year + 543
+
+        sal_col1, sal_col2, sal_col3 = st.columns([2, 2, 3])
+        with sal_col1:
+            sal_month = st.number_input("เดือน", min_value=1, max_value=12,
+                                        value=_def_m2, step=1, key="sal_month")
+        with sal_col2:
+            sal_year = st.number_input("ปี (พ.ศ.)", min_value=2560, max_value=2599,
+                                       value=_def_y2, step=1, key="sal_year")
+        with sal_col3:
+            st.write("")
+            st.write("")
+            if st.button("📊 สรุป Salary ใหม่", key="btn_rebuild_salary",
+                         use_container_width=True):
+                _sal_st = st.empty()
+                _update_salary_summary(ss, int(sal_month), int(sal_year),
+                                       status_text=_sal_st)
+
     # ══════════════════════════════════════════════════════════════
     # วันหยุดตามประเพณี — บันทึกวันหยุดพิเศษประจำเดือน
     # ══════════════════════════════════════════════════════════════
