@@ -772,6 +772,24 @@ def render_payroll_page(gc: gspread.Client,
             else:
                 st.warning("⚠️ อ่านไฟล์ไม่ได้ หรือไม่พบข้อมูล")
 
+        # ── Sync Template จาก Block ล่าสุด (ก่อน Freeze) ────────────
+        st.divider()
+        st.caption("🔄 Sync Template — คัดลอกข้อมูล Block ล่าสุด → ตารางเทมเพลต (col N–Y) ทุก Sheet พนักงาน")
+        _emp_all_pairs = [
+            (sh.split("_")[0], sh)
+            for sh in visible_sheets
+            if re.match(r"^\d+_", sh)
+        ]
+        if st.button("🔄 Sync Template จาก Block ล่าสุด",
+                     key="btn_sync_template", use_container_width=True):
+            _st_sync = st.empty()
+            _all_ws_sync = _sheets_retry(ss.worksheets)
+            _ws_map_sync = {w.title: w for w in _all_ws_sync}
+            _sync_template_from_latest_block(ss, _ws_map_sync, _emp_all_pairs,
+                                             status_text=_st_sync)
+            if _st_sync:
+                _st_sync.success("✅ Sync Template เรียบร้อยค่ะ")
+
         # ── Freeze ประวัติ (แสดงเสมอ ไม่ต้องอัปโหลดไฟล์ก่อน) ──────────
         st.divider()
         st.caption("🔒 Freeze ประวัติ — แปลงสูตรในคอลัมน์ประวัติ (Z เป็นต้นไป) ให้เป็นค่านิ่ง กดได้ทุกเวลา ไม่ต้องรันเงินเดือนใหม่")
@@ -1188,6 +1206,17 @@ def _freeze_history_standalone(pairs, ss):
         return
 
     valid_pairs = [(sn, sh) for sn, sh in pairs if sh in ws_map]
+
+    # ── Step 1.5: Sync Template จาก Block ล่าสุด ก่อน Freeze ────────
+    if valid_pairs:
+        status_text.info("📋 [1.5/3] กำลัง Sync Template จาก Block ล่าสุด...")
+        try:
+            _emp_pairs = [(sh.split("_")[0], sh) for _, sh in valid_pairs]
+            _sync_template_from_latest_block(ss, ws_map, _emp_pairs,
+                                             status_text=None)
+        except Exception:
+            pass  # sync ไม่ได้ก็ข้าม ไม่หยุด freeze
+
     if not valid_pairs:
         st.warning("⚠️ ไม่พบ Sheet ที่ตรงกันเลยค่ะ")
         progress_bar.empty(); status_text.empty()
