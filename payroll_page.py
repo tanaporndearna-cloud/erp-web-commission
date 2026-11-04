@@ -201,6 +201,97 @@ def _freeze_formulas_to_values(ss, sheet_pairs, col_start: int, num_rows: int, c
     return last_cols
 
 
+def _sync_template_from_latest_block(ss, ws_map: dict, pairs: list,
+                                     status_text=None):
+    """
+    ก่อน Freeze: คัดลอกข้อมูล Block N (ล่าสุด) → Template area (Col N–Y)
+    ใช้ copyPaste API (เหมือน Ctrl+C, Ctrl+V) — relative references ถูกปรับอัตโนมัติ
+
+    หลัง copy: template col 7 (col T, col 20) แถว 39, 44, 45, 49, 50
+              → เขียนสูตร =G{row} ทับ (absolute reference คงที่)
+
+    ws_map  : {sheet_title: gspread.Worksheet}
+    pairs   : [(emp_id, sheet_title), ...]
+    """
+    BLOCK_FIRST_COL = 27
+    BLOCK_WIDTH     = 13
+    BLOCK_COL10_OFF = 9     # 0-indexed → ใช้ตรวจหา latest block
+    ROW_SALARY      = 56    # แถวที่ตรวจหา latest block
+
+    # Template area: col N (14) ถึง col Y (25) — 12 คอลัมน์
+    TMPL_COL_START  = 14   # 1-indexed
+    TMPL_COL7_ABS   = 20   # col T (1-indexed) = template col 7
+
+    ROW_START       = 38
+    ROW_END         = 90
+
+    SPECIAL_ROWS    = {39, 44, 45, 49, 50}  # แถวที่ใช้ =G{row} ที่ template col T
+
+    def _blk_col(n, off):
+        return BLOCK_FIRST_COL + (n - 1) * BLOCK_WIDTH + off
+
+    if status_text:
+        status_text.info("📋 กำลังซิงค์ Template จาก Block ล่าสุด (Ctrl+V)...")
+
+    for _emp_id, sh_title in pairs:
+        ws = ws_map.get(sh_title)
+        if ws is None:
+            continue
+        try:
+            # 1. หา latest_block จาก row 56
+            row56 = _sheets_retry(ws.row_values, ROW_SALARY)
+            latest_block = 0
+            for b in range(1, 121):
+                idx0 = _blk_col(b, BLOCK_COL10_OFF) - 1
+                if idx0 >= len(row56) or not str(row56[idx0]).strip():
+                    latest_block = b - 1
+                    break
+            else:
+                latest_block = 120
+
+            if latest_block == 0:
+                continue  # ไม่มีข้อมูลบล็อกใน sheet นี้
+
+            # คอลัมน์เริ่มต้นของ Block N (1-indexed)
+            blk_col_start = BLOCK_FIRST_COL + (latest_block - 1) * BLOCK_WIDTH
+
+            # 2. copyPaste: Block N rows 38–90 → Template col N–Y
+            #    API ใช้ 0-indexed และ endIndex เป็น exclusive
+            sheet_id = ws.id
+            copy_req = {
+                "copyPaste": {
+                    "source": {
+                        "sheetId"         : sheet_id,
+                        "startRowIndex"   : ROW_START - 1,          # 0-indexed
+                        "endRowIndex"     : ROW_END,                 # exclusive
+                        "startColumnIndex": blk_col_start - 1,      # 0-indexed
+                        "endColumnIndex"  : blk_col_start - 1 + 12, # exclusive (12 cols)
+                    },
+                    "destination": {
+                        "sheetId"         : sheet_id,
+                        "startRowIndex"   : ROW_START - 1,
+                        "endRowIndex"     : ROW_END,
+                        "startColumnIndex": TMPL_COL_START - 1,     # 0-indexed = 13 (col N)
+                        "endColumnIndex"  : TMPL_COL_START - 1 + 12, # exclusive = 25 (col Y+1)
+                    },
+                    "pasteType"       : "PASTE_NORMAL",
+                    "pasteOrientation": "NORMAL",
+                }
+            }
+            _sheets_retry(ss.batch_update, {"requests": [copy_req]})
+
+            # 3. เขียน =G{row} ทับที่ template col T (col 20) แถวพิเศษ
+            overrides = [
+                {"range": f"{col_letter(TMPL_COL7_ABS)}{r}", "values": [[f"=G{r}"]]}
+                for r in SPECIAL_ROWS
+            ]
+            _sheets_retry(ws.batch_update, overrides,
+                          value_input_option="USER_ENTERED")
+
+        except Exception:
+            pass  # sheet นี้ fail → ข้ามและทำ sheet ถัดไป
+
+
 def norm_date(val) -> str | None:
     """แปลงค่าต่าง ๆ เป็น 'DD/MM/YYYY' (พ.ศ.)"""
     if isinstance(val, str):
@@ -545,11 +636,18 @@ def render_payroll_page(gc: gspread.Client,
                                     st.text(err)
                         return
 
-                    # ── Freeze ประวัติเก่า → ค่านิ่ง (segment-based, รูปปลอดภัย) ──
+                    # ── Sync Template จาก Block N → ก่อน Freeze ───────────────────
                     try:
                         _all_ws2 = _sheets_retry(ss.worksheets)
                         _ws2_map = {w.title: w for w in _all_ws2}
                         _fz2_pairs = [(sh, sh) for _, sh in pairs if sh in _ws2_map]
+
+                        # คัดลอกข้อมูล Block N → Template (col N–Y) ก่อน freeze
+                        _sync_template_from_latest_block(
+                            ss, _ws2_map, pairs, status_text=status_text
+                        )
+
+                        # Freeze ประวัติเก่า → ค่านิ่ง (segment-based, รูปปลอดภัย)
                         _freeze_formulas_to_values(ss, _fz2_pairs, col_start=26, num_rows=100)
                     except Exception:
                         pass   # freeze ไม่ได้ก็ข้าม ไม่หยุดการคิดเงินเดือน
