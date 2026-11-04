@@ -215,6 +215,7 @@ def _sync_template_from_latest_block(ss, ws_map: dict, pairs: list,
     """
     BLOCK_FIRST_COL = 27
     BLOCK_WIDTH     = 13
+    BLOCK_COL7_OFF  = 6     # 0-indexed → template col 7 (col T) แถวพิเศษ
     BLOCK_COL10_OFF = 9     # 0-indexed → ใช้ตรวจหา latest block
     ROW_SALARY      = 56    # แถวที่ตรวจหา latest block
 
@@ -255,37 +256,32 @@ def _sync_template_from_latest_block(ss, ws_map: dict, pairs: list,
             # คอลัมน์เริ่มต้นของ Block N (1-indexed)
             blk_col_start = BLOCK_FIRST_COL + (latest_block - 1) * BLOCK_WIDTH
 
-            # 2. copyPaste: Block N rows 38–90 → Template col N–Y
-            #    API ใช้ 0-indexed และ endIndex เป็น exclusive
-            sheet_id = ws.id
-            copy_req = {
-                "copyPaste": {
-                    "source": {
-                        "sheetId"         : sheet_id,
-                        "startRowIndex"   : ROW_START - 1,          # 0-indexed
-                        "endRowIndex"     : ROW_END,                 # exclusive
-                        "startColumnIndex": blk_col_start - 1,      # 0-indexed
-                        "endColumnIndex"  : blk_col_start - 1 + 12, # exclusive (12 cols)
-                    },
-                    "destination": {
-                        "sheetId"         : sheet_id,
-                        "startRowIndex"   : ROW_START - 1,
-                        "endRowIndex"     : ROW_END,
-                        "startColumnIndex": TMPL_COL_START - 1,     # 0-indexed = 13 (col N)
-                        "endColumnIndex"  : TMPL_COL_START - 1 + 12, # exclusive = 25 (col Y+1)
-                    },
-                    "pasteType"       : "PASTE_NORMAL",
-                    "pasteOrientation": "NORMAL",
-                }
-            }
-            _sheets_retry(ss.batch_update, {"requests": [copy_req]})
+            # 2. อ่านสูตร/ค่าจาก Block N แบบ FORMULA (ได้ text สูตรตรงๆ ไม่ shift)
+            src_rng = (f"{col_letter(blk_col_start)}{ROW_START}:"
+                       f"{col_letter(blk_col_start + 11)}{ROW_END}")
+            raw = _sheets_retry(ws.get, src_rng,
+                                value_render_option="FORMULA")
 
-            # 3. เขียน =G{row} ทับที่ template col T (col 20) แถวพิเศษ
-            overrides = [
-                {"range": f"{col_letter(TMPL_COL7_ABS)}{r}", "values": [[f"=G{r}"]]}
-                for r in SPECIAL_ROWS
-            ]
-            _sheets_retry(ws.batch_update, overrides,
+            # 3. สร้าง 2D array → เขียนลง Template ทีเดียว
+            #    สูตรถูก paste ตรงๆ ไม่มีการ shift reference
+            tmpl_data = []
+            for row_i in range(ROW_END - ROW_START + 1):
+                row_num = ROW_START + row_i
+                src_row = raw[row_i] if row_i < len(raw) else []
+                tmpl_row = []
+                for col_i in range(12):
+                    if col_i == BLOCK_COL7_OFF and row_num in SPECIAL_ROWS:
+                        # template col 7 (col T) แถวพิเศษ → ใช้ =G{row} คงที่
+                        tmpl_row.append(f"=G{row_num}")
+                    else:
+                        tmpl_row.append(
+                            src_row[col_i] if col_i < len(src_row) else ""
+                        )
+                tmpl_data.append(tmpl_row)
+
+            tmpl_rng = (f"{col_letter(TMPL_COL_START)}{ROW_START}:"
+                        f"{col_letter(TMPL_COL_START + 11)}{ROW_END}")
+            _sheets_retry(ws.update, tmpl_rng, tmpl_data,
                           value_input_option="USER_ENTERED")
 
         except Exception:
