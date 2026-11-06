@@ -77,6 +77,42 @@ def col_letter(n: int) -> str:
     return s
 
 
+def col_num(s: str) -> int:
+    """แปลงตัวอักษรคอลัมน์ (ไม่มี $) เป็นเลข 1-indexed เช่น A→1, AA→27"""
+    n = 0
+    for c in s.upper():
+        n = n * 26 + (ord(c) - ord('A') + 1)
+    return n
+
+
+def _shift_inblock_refs(formula: str, blk_col_start: int, tmpl_col_start: int) -> str:
+    """
+    ปรับสูตรจาก Block N → Template:
+    - อ้างอิงที่อยู่ในช่วง Block N (blk_col_start..blk_col_start+11)
+      → shift ไปยัง Template col ที่ตรงกัน
+    - อ้างอิงนอก Block (เช่น col G) → คงเดิม
+    - $ anchor บน col/row ยังคงอยู่
+    """
+    if not isinstance(formula, str) or not formula.startswith('='):
+        return formula
+    blk_col_end = blk_col_start + 11
+    shift = tmpl_col_start - blk_col_start   # ค่าติดลบ (template อยู่ซ้าย block)
+
+    def _replace(m):
+        dollar_col = m.group(1)   # '$' หรือ ''
+        letters    = m.group(2)   # ตัวอักษรคอลัมน์ เช่น 'EN'
+        dollar_row = m.group(3)   # '$' หรือ ''
+        digits     = m.group(4)   # เลขแถว
+        cn = col_num(letters)
+        if blk_col_start <= cn <= blk_col_end:
+            new_cn = cn + shift
+            return f"{dollar_col}{col_letter(new_cn)}{dollar_row}{digits}"
+        return m.group(0)   # ไม่เปลี่ยน
+
+    # match: [$][A-Z]+[$][0-9]+  — ครอบคลุมทั้ง relative/absolute ref
+    return re.sub(r'(\$?)([A-Z]+)(\$?)(\d+)', _replace, formula)
+
+
 def _freeze_formulas_to_values(ss, sheet_pairs, col_start: int, num_rows: int, chunk: int = 50):
     """
     แปลงสูตรใน history area → ค่านิ่ง โดยไม่กระทบรูปที่อยู่ใน cell
@@ -274,8 +310,10 @@ def _sync_template_from_latest_block(ss, ws_map: dict, pairs: list,
                         # template col 7 (col T) แถวพิเศษ → ใช้ =G{row} คงที่
                         tmpl_row.append(f"=G{row_num}")
                     else:
+                        raw_val = src_row[col_i] if col_i < len(src_row) else ""
+                        # ปรับ ref ที่อยู่ในช่วง Block → Template; ref นอก Block คงเดิม
                         tmpl_row.append(
-                            src_row[col_i] if col_i < len(src_row) else ""
+                            _shift_inblock_refs(raw_val, blk_col_start, TMPL_COL_START)
                         )
                 tmpl_data.append(tmpl_row)
 
