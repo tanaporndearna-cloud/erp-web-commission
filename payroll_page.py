@@ -68,6 +68,23 @@ MONTH_TH_FULL = ["", "มกราคม", "กุมภาพันธ์", "�
 
 # ── Helpers ─────────────────────────────────────────────────────
 
+def _ws_get_formulas(ws, src_rng: str) -> list:
+    """
+    อ่านสูตรจาก worksheet ผ่าน batchGet endpoint
+    — ชื่อ sheet ส่งเป็น query param (HTTP lib encode ให้) ไม่ต้อง encode URL path เอง
+    — valueRenderOption เป็น camelCase ตรงๆ ไม่ผ่าน gspread conversion
+    """
+    ss = ws.spreadsheet
+    abs_range = f"'{ws.title}'!{src_rng}"
+    resp = ss.client.request(
+        "get",
+        f"https://sheets.googleapis.com/v4/spreadsheets/{ss.id}/values:batchGet",
+        params={"ranges": [abs_range], "valueRenderOption": "FORMULA"},
+    )
+    ranges = resp.json().get("valueRanges", [])
+    return ranges[0].get("values", []) if ranges else []
+
+
 def col_letter(n: int) -> str:
     """แปลงเลขคอลัมน์ (1-indexed) เป็นตัวอักษร เช่น 13 → M"""
     s = ""
@@ -268,7 +285,9 @@ def _sync_template_from_latest_block(ss, ws_map: dict, pairs: list,
         return BLOCK_FIRST_COL + (n - 1) * BLOCK_WIDTH + off
 
     if status_text:
-        status_text.info("📋 กำลังซิงค์ Template จาก Block ล่าสุด (Ctrl+V)...")
+        status_text.info("📋 กำลังซิงค์ Template จาก Block ล่าสุด...")
+
+    failed_sheets = []
 
     for _emp_id, sh_title in pairs:
         ws = ws_map.get(sh_title)
@@ -292,11 +311,10 @@ def _sync_template_from_latest_block(ss, ws_map: dict, pairs: list,
             # คอลัมน์เริ่มต้นของ Block N (1-indexed)
             blk_col_start = BLOCK_FIRST_COL + (latest_block - 1) * BLOCK_WIDTH
 
-            # 2. อ่านสูตร/ค่าจาก Block N แบบ FORMULA (ได้ text สูตรตรงๆ ไม่ shift)
+            # 2. อ่านสูตรจาก Block N — ใช้ API โดยตรง (valueRenderOption=FORMULA)
             src_rng = (f"{col_letter(blk_col_start)}{ROW_START}:"
                        f"{col_letter(blk_col_start + 11)}{ROW_END}")
-            raw = _sheets_retry(ws.get, src_rng,
-                                value_render_option="FORMULA")
+            raw = _sheets_retry(_ws_get_formulas, ws, src_rng)
 
             # 3. สร้าง 2D array → เขียนลง Template ทีเดียว
             #    สูตรถูก paste ตรงๆ ไม่มีการ shift reference
@@ -322,8 +340,11 @@ def _sync_template_from_latest_block(ss, ws_map: dict, pairs: list,
             _sheets_retry(ws.update, tmpl_rng, tmpl_data,
                           value_input_option="USER_ENTERED")
 
-        except Exception:
-            pass  # sheet นี้ fail → ข้ามและทำ sheet ถัดไป
+        except Exception as _e:
+            failed_sheets.append(f"{sh_title}: {_e}")
+
+    if failed_sheets and status_text:
+        status_text.warning("⚠️ Sync ไม่สำเร็จบางชีต:\n" + "\n".join(failed_sheets))
 
 
 def norm_date(val) -> str | None:
