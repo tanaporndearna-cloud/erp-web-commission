@@ -130,6 +130,24 @@ def _shift_inblock_refs(formula: str, blk_col_start: int, tmpl_col_start: int) -
     return re.sub(r'(\$?)([A-Z]+)(\$?)(\d+)', _replace, formula)
 
 
+def _numeric_or_str(v):
+    """
+    แปลง formatted string เป็น float/int ถ้าเป็นตัวเลข
+    เช่น '18,000.00' → 18000.0  |  'ลาป่วย' → 'ลาป่วย'  |  '' → ''
+    ป้องกัน Google Sheets เก็บตัวเลขเป็น text (ขึ้น ' ข้างหน้า)
+    """
+    if not isinstance(v, str):
+        return v
+    cleaned = v.replace(",", "").strip()
+    if not cleaned or cleaned in ("-", "—"):
+        return v
+    try:
+        f = float(cleaned)
+        return int(f) if f == int(f) else f
+    except ValueError:
+        return v
+
+
 def _freeze_formulas_to_values(ss, sheet_pairs, col_start: int, num_rows: int, chunk: int = 50):
     """
     แปลงสูตรใน history area → ค่านิ่ง โดยไม่กระทบรูปที่อยู่ใน cell
@@ -208,7 +226,7 @@ def _freeze_formulas_to_values(ss, sheet_pairs, col_start: int, num_rows: int, c
                             dv = (rows_d[ri][ci]
                                   if ri < len(rows_d) and ci < len(rows_d[ri])
                                   else "")
-                            fml_rows.append((ri, dv))
+                            fml_rows.append((ri, _numeric_or_str(dv)))
 
                     if not fml_rows:
                         continue
