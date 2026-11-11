@@ -172,7 +172,7 @@ with _col_left:
     st.caption("ล้างชีทด้วย App Script ก่อน แล้วค่อยกดปุ่ม")
 
     upload_xlsx = st.file_uploader(
-        "ไฟล์ xlsx ที่มีชีท sum(ตัดO2O)",
+        "ไฟล์ รายงานขายค่าคอมเดือน... หลังตัด O2O",
         type=["xlsx"],
         key="copy_xlsx"
     )
@@ -189,8 +189,8 @@ with _col_left:
 
 # ── ขวา: เติม H วันขาด/ลา ──
 with _col_right:
-    st.markdown("**🗓️ เติม H วันขาด/ลา → สรุปCom**")
-    st.caption("ไม่อัปโหลดไฟล์ InOut = ใส่ H เฉพาะวันอาทิตย์")
+    st.markdown("**🗓️ เติมวันหยุด/วันลา(H) ในไฟล์ Commission SL**")
+    st.caption("กรณีไม่มีไฟล์ Upload จะใส่ H เฉพาะวันอาทิตย์")
 
     inout_file = st.file_uploader(
         "ไฟล์ InOutDailyReport.xlsx (ไม่บังคับ)",
@@ -200,7 +200,7 @@ with _col_right:
     )
 
     mark_h_btn = st.button(
-        "🗓️ เติม H" + (" วันอาทิตย์ + ขาด/ลา" if inout_file else " วันอาทิตย์"),
+        "🗓️ เติม H วันหยุด/วันลา",
         type="secondary",
         use_container_width=True,
     )
