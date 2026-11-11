@@ -847,25 +847,14 @@ def render_payroll_page(gc: gspread.Client,
 
         # ── ย้าย/สรุป sheet เงินเดือน (แสดงเสมอ ไม่ต้องอัปโหลดไฟล์) ────
         st.divider()
-        st.caption("📚 ย้าย/สรุป sheet เงินเดือน — copy เทมเพลตปัจจุบัน (col N–Y) → Block ประวัติ กดได้ทุกเวลา ไม่ต้องอัปโหลดไฟล์ใหม่")
 
         import datetime as _dt_hist
         _now_hist = _dt_hist.date.today()
-        _hist_col1, _hist_col2, _hist_col3 = st.columns([2, 2, 3])
-        with _hist_col1:
-            _hist_month = st.number_input("เดือน", min_value=1, max_value=12,
-                                          value=_now_hist.month, step=1,
-                                          key="hist_sa_month")
-        with _hist_col2:
-            _hist_year = st.number_input("ปี (พ.ศ.)", min_value=2560, max_value=2599,
-                                         value=_now_hist.year + 543, step=1,
-                                         key="hist_sa_year")
-        with _hist_col3:
-            st.write("")
-            st.write("")
-            _hist_label = "📚 ย้าย/สรุป sheet เงินเดือน" + (" (+ DB)" if ss_db else "")
-            if st.button(_hist_label, key="btn_history_standalone",
-                         use_container_width=True):
+        _hist_month = _now_hist.month
+        _hist_year  = _now_hist.year + 543
+        _hist_label = "📚 ย้าย/สรุป sheet เงินเดือน" + (" (+ DB)" if ss_db else "")
+        if st.button(_hist_label, key="btn_history_standalone",
+                     use_container_width=True):
                 _hist_pairs_sa = [
                     sh for sh in visible_sheets if re.match(r"^\d+_", sh)
                 ]
