@@ -885,7 +885,7 @@ def render_payroll_page(gc: gspread.Client,
 
         # ── Sync Template จาก Block ล่าสุด (ก่อน Freeze) ────────────
         st.divider()
-        st.subheader("เตรียมไฟล์เงินเดือนใหม่")
+        st.markdown("**เตรียมไฟล์เงินเดือนใหม่**")
         st.caption("🔄 Sync Template — คัดลอกข้อมูล Block ล่าสุด → ตารางเทมเพลต (col N–Y) ทุก Sheet พนักงาน")
         _emp_all_pairs = [
             (sh.split("_")[0], sh)
