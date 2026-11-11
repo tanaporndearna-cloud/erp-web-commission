@@ -845,6 +845,54 @@ def render_payroll_page(gc: gspread.Client,
             else:
                 st.warning("⚠️ อ่านไฟล์ไม่ได้ หรือไม่พบข้อมูล")
 
+        # ── ย้าย/สรุป sheet เงินเดือน (แสดงเสมอ ไม่ต้องอัปโหลดไฟล์) ────
+        st.divider()
+        st.caption("📚 ย้าย/สรุป sheet เงินเดือน — copy เทมเพลตปัจจุบัน (col N–Y) → Block ประวัติ กดได้ทุกเวลา ไม่ต้องอัปโหลดไฟล์ใหม่")
+
+        import datetime as _dt_hist
+        _now_hist = _dt_hist.date.today()
+        _hist_col1, _hist_col2, _hist_col3 = st.columns([2, 2, 3])
+        with _hist_col1:
+            _hist_month = st.number_input("เดือน", min_value=1, max_value=12,
+                                          value=_now_hist.month, step=1,
+                                          key="hist_sa_month")
+        with _hist_col2:
+            _hist_year = st.number_input("ปี (พ.ศ.)", min_value=2560, max_value=2599,
+                                         value=_now_hist.year + 543, step=1,
+                                         key="hist_sa_year")
+        with _hist_col3:
+            st.write("")
+            st.write("")
+            _hist_label = "📚 ย้าย/สรุป sheet เงินเดือน" + (" (+ DB)" if ss_db else "")
+            if st.button(_hist_label, key="btn_history_standalone",
+                         use_container_width=True):
+                _hist_pairs_sa = [
+                    sh for sh in visible_sheets if re.match(r"^\d+_", sh)
+                ]
+                if _hist_pairs_sa:
+                    _hist_month_yr = f"{int(_hist_month)}/{int(_hist_year)}"
+                    _hist_st = st.empty()
+                    _hist_st.info(f"📚 กำลังย้าย/สรุป {_hist_month_yr} — {len(_hist_pairs_sa)} Sheet...")
+                    _hist_res = _export_history_batch(
+                        ss, _hist_pairs_sa, _hist_month_yr, ss_db,
+                        status_text=_hist_st,
+                    )
+                    _hist_ok  = sum(1 for r in _hist_res if r.get("ok"))
+                    _hist_fail = [r for r in _hist_res if not r.get("ok")]
+                    if _hist_fail:
+                        _hist_st.warning(
+                            f"⚠️ สำเร็จ {_hist_ok} Sheet, ล้มเหลว {len(_hist_fail)} Sheet:\n" +
+                            "\n".join(f"• {r['sheet']}: {r['msg']}" for r in _hist_fail)
+                        )
+                    else:
+                        _hist_st.success(f"✅ ย้าย/สรุปครบ {_hist_ok} Sheet ค่ะ")
+                        _sal_st2 = st.empty()
+                        _sal_st2.info("📊 กำลังอัปเดตสรุปเงินเดือน...")
+                        _update_salary_summary(ss, int(_hist_month), int(_hist_year),
+                                               status_text=_sal_st2)
+                else:
+                    st.warning("⚠️ ไม่พบ Sheet พนักงาน")
+
         # ── Sync Template จาก Block ล่าสุด (ก่อน Freeze) ────────────
         st.divider()
         st.caption("🔄 Sync Template — คัดลอกข้อมูล Block ล่าสุด → ตารางเทมเพลต (col N–Y) ทุก Sheet พนักงาน")
