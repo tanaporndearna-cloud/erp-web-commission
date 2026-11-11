@@ -802,46 +802,39 @@ def render_payroll_page(gc: gspread.Client,
                     value=True, key="toggle_fast"
                 )
 
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("▶ เริ่มคิดเงินเดือน (ล้างเก่า → สร้างวันที่ → วางเวลา)",
-                                 type="primary", key="btn_payroll", use_container_width=True):
-                        if use_fast:
-                            # โหลดวันหยุดตามประเพณีก่อนส่งให้ fast mode
-                            _hmap = {}
-                            try:
-                                _hws  = ss.worksheet("วันหยุดประเพณี")
-                                _hrows = _hws.get_all_records()
-                                for _hr in _hrows:
-                                    _d = int(_hr.get("วันที่", 0) or 0)
-                                    _m = int(_hr.get("เดือน",  0) or 0)
-                                    _y = int(_hr.get("ปี (พ.ศ.)", 0) or 0)
-                                    if _d and _m and _y:
-                                        _dk = f"{str(_d).zfill(2)}/{str(_m).zfill(2)}/{_y}"
-                                        _hmap[_dk] = True
-                            except Exception:
-                                pass
-                            _run_sheets_fast(matched_pairs, att_df,
-                                             auto_month, auto_year, ss,
-                                             holidays_map=_hmap)
-                            # ── ล้างวันหยุดออกจาก sheet อัตโนมัติหลังรันสำเร็จ ──
-                            try:
-                                _hws2 = ss.worksheet("วันหยุดประเพณี")
-                                _hws2.clear()
-                                _hws2.append_row(["ปี (พ.ศ.)", "เดือน", "วันที่"])
-                                _hws2.freeze(rows=1)
-                                # ล้าง cache ด้วย
-                                st.session_state.pop("_hol_data", None)
-                                st.session_state.pop("_hol_ws",   None)
-                            except Exception:
-                                pass
-                        else:
-                            _run_sheets(matched_pairs, att_df, do_history=False)
-
-                with col2:
-                    hist_label = "📚 บันทึกประวัติ (เทมเพลต" + (" + DB" if ss_db else "") + ")"
-                    if st.button(hist_label, key="btn_history", use_container_width=True):
-                        _run_sheets(matched_pairs, att_df, do_history=True)
+                if st.button("▶ เริ่มคิดเงินเดือน (ล้างเก่า → สร้างวันที่ → วางเวลา)",
+                             type="primary", key="btn_payroll", use_container_width=True):
+                    if use_fast:
+                        # โหลดวันหยุดตามประเพณีก่อนส่งให้ fast mode
+                        _hmap = {}
+                        try:
+                            _hws  = ss.worksheet("วันหยุดประเพณี")
+                            _hrows = _hws.get_all_records()
+                            for _hr in _hrows:
+                                _d = int(_hr.get("วันที่", 0) or 0)
+                                _m = int(_hr.get("เดือน",  0) or 0)
+                                _y = int(_hr.get("ปี (พ.ศ.)", 0) or 0)
+                                if _d and _m and _y:
+                                    _dk = f"{str(_d).zfill(2)}/{str(_m).zfill(2)}/{_y}"
+                                    _hmap[_dk] = True
+                        except Exception:
+                            pass
+                        _run_sheets_fast(matched_pairs, att_df,
+                                         auto_month, auto_year, ss,
+                                         holidays_map=_hmap)
+                        # ── ล้างวันหยุดออกจาก sheet อัตโนมัติหลังรันสำเร็จ ──
+                        try:
+                            _hws2 = ss.worksheet("วันหยุดประเพณี")
+                            _hws2.clear()
+                            _hws2.append_row(["ปี (พ.ศ.)", "เดือน", "วันที่"])
+                            _hws2.freeze(rows=1)
+                            # ล้าง cache ด้วย
+                            st.session_state.pop("_hol_data", None)
+                            st.session_state.pop("_hol_ws",   None)
+                        except Exception:
+                            pass
+                    else:
+                        _run_sheets(matched_pairs, att_df, do_history=False)
 
             else:
                 st.warning("⚠️ อ่านไฟล์ไม่ได้ หรือไม่พบข้อมูล")
