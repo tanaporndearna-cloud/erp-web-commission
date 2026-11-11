@@ -36,13 +36,13 @@ st.subheader("📁 ระบบคิดค่าคอมพนักงาน�
 col1, col2 = st.columns(2)
 with col1:
     erp_file = st.file_uploader(
-        "ไฟล์ ERP (บังคับ)",
+        "ไฟล์ รายงานขาย (บังคับ)",
         type=["xlsx"],
         help="Com_ERP*.xlsx ที่ได้จากระบบ eFlowsys"
     )
 with col2:
     pps_file = st.file_uploader(
-        "ไฟล์ PPS (ถ้ามี)",
+        "ไฟล์ PPS",
         type=["xlsx", "xls"],
         help="PPS.xlsx ข้อมูลราคาสินค้า (ถ้าไม่มีจะใช้จากไฟล์ ERP)"
     )
@@ -50,14 +50,11 @@ with col2:
 # ===== Run Button =====
 st.divider()
 run_btn = st.button(
-    "🚀 คิดค่าคอม",
+    "🚀 คำนวณคอมมิชชั่น",
     type="primary",
     disabled=(erp_file is None),
     use_container_width=True,
 )
-
-if erp_file is None:
-    st.info("กรุณาอัปโหลดไฟล์ ERP ก่อนค่ะ")
 
 # ===== Processing =====
 if run_btn and erp_file is not None:
