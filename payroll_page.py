@@ -849,6 +849,7 @@ def render_payroll_page(gc: gspread.Client,
         # ── ย้าย/สรุป sheet เงินเดือน (แสดงเสมอ ไม่ต้องอัปโหลดไฟล์) ────
         st.divider()
 
+        st.caption("📋 บันทึกประวัติ (copy col N–Y → Block ประวัติ) ทุก Sheet + อัปเดตชีตสรุปเงินเดือน")
         import datetime as _dt_hist
         _now_hist = _dt_hist.date.today()
         _hist_month = _now_hist.month
