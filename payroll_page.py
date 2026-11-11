@@ -639,306 +639,306 @@ def render_payroll_page(gc: gspread.Client,
     # ══════════════════════════════════════════════════════════════
     # คิดเงินเดือนพนักงาน — Import เวลาเข้า-ออกงาน
     # ══════════════════════════════════════════════════════════════
-    with st.expander("🧾  สร้าง Sheet เงินเดือนใหม่", expanded=True):
-        st.caption("อัปโหลดไฟล์เวลา → ล้างเก่า → สร้างวันที่ → วางเวลา → บันทึกประวัติ (ประมวลผลทุก Sheet พนักงานอัตโนมัติ)")
+    st.markdown("### 🧾 สร้าง Sheet เงินเดือนใหม่")
+    st.caption("อัปโหลดไฟล์เวลา → ล้างเก่า → สร้างวันที่ → วางเวลา → บันทึกประวัติ (ประมวลผลทุก Sheet พนักงานอัตโนมัติ)")
 
-        att_file = st.file_uploader("📂 ไฟล์เวลาเข้า-ออกงาน (.xlsx / .xls)",
-                                    type=["xlsx", "xls"], key="att_file")
-        st.caption("คิดเงินเดือนพนักงาน (Import เวลาเข้า-ออกงาน)")
+    att_file = st.file_uploader("📂 ไฟล์เวลาเข้า-ออกงาน (.xlsx / .xls)",
+                                type=["xlsx", "xls"], key="att_file")
+    st.caption("คิดเงินเดือนพนักงาน (Import เวลาเข้า-ออกงาน)")
 
-        if att_file:
-            att_df = _read_attendance_file(att_file)
-            if att_df is not None and not att_df.empty:
-                auto_month, auto_year = detect_period_from_df(att_df)
+    if att_file:
+        att_df = _read_attendance_file(att_file)
+        if att_df is not None and not att_df.empty:
+            auto_month, auto_year = detect_period_from_df(att_df)
 
-                # จับคู่ sheet กับรหัสพนักงาน
-                # ชื่อ sheet รูปแบบ "99043_ณี" → prefix ก่อน "_" คือรหัสพนักงาน
-                EXCLUDE_SHEETS = {CFG["HISTORY_SHEET"]}
-                emp_ids_in_file = att_df["รหัสพนักงาน"].dropna().unique().tolist()
-                emp_ids_in_file = [str(e) for e in emp_ids_in_file if str(e).strip()]
+            # จับคู่ sheet กับรหัสพนักงาน
+            # ชื่อ sheet รูปแบบ "99043_ณี" → prefix ก่อน "_" คือรหัสพนักงาน
+            EXCLUDE_SHEETS = {CFG["HISTORY_SHEET"]}
+            emp_ids_in_file = att_df["รหัสพนักงาน"].dropna().unique().tolist()
+            emp_ids_in_file = [str(e) for e in emp_ids_in_file if str(e).strip()]
 
-                # สร้าง map: รหัสพนักงาน → ชื่อ sheet
-                id_to_sheet = {}
-                for sh in visible_sheets:
-                    if sh in EXCLUDE_SHEETS:
-                        continue
-                    prefix = sh.split("_")[0].strip()
-                    if prefix in emp_ids_in_file:
-                        id_to_sheet[prefix] = sh
+            # สร้าง map: รหัสพนักงาน → ชื่อ sheet
+            id_to_sheet = {}
+            for sh in visible_sheets:
+                if sh in EXCLUDE_SHEETS:
+                    continue
+                prefix = sh.split("_")[0].strip()
+                if prefix in emp_ids_in_file:
+                    id_to_sheet[prefix] = sh
 
-                # แจ้งถ้ามีรหัสในไฟล์ที่ไม่มี sheet
-                missing = [e for e in emp_ids_in_file if e not in id_to_sheet]
-                if missing:
-                    st.warning(f"⚠️ ไม่พบ Sheet สำหรับรหัส: {', '.join(missing)} — จะข้ามค่ะ")
+            # แจ้งถ้ามีรหัสในไฟล์ที่ไม่มี sheet
+            missing = [e for e in emp_ids_in_file if e not in id_to_sheet]
+            if missing:
+                st.warning(f"⚠️ ไม่พบ Sheet สำหรับรหัส: {', '.join(missing)} — จะข้ามค่ะ")
 
-                matched_pairs = list(id_to_sheet.items())   # [(emp_id, sheet_name), ...]
+            matched_pairs = list(id_to_sheet.items())   # [(emp_id, sheet_name), ...]
 
-                def _run_sheets(pairs, att_df, do_history=False):
-                    success_count = 0
-                    fail_count    = 0
-                    errors        = []
-                    progress_bar  = st.progress(0)
-                    status_text   = st.empty()
+            def _run_sheets(pairs, att_df, do_history=False):
+                success_count = 0
+                fail_count    = 0
+                errors        = []
+                progress_bar  = st.progress(0)
+                status_text   = st.empty()
 
-                    if do_history:
-                        # ── FAST BATCH MODE สำหรับ history ──────────────────
-                        month_yr    = f"{auto_month}/{auto_year}"
-                        sheet_names = [sh_pay for _, sh_pay in pairs]
-                        batch_results = _export_history_batch(
-                            ss, sheet_names, month_yr, ss_db,
-                            status_text=status_text,
-                            progress_bar=progress_bar,
-                        )
-                        for idx2, r in enumerate(batch_results):
-                            progress_bar.progress((idx2 + 1) / len(pairs))
-                            if not r["ok"]:
-                                errors.append(f"{r['sheet']}: บันทึกประวัติไม่ได้ — {r['msg']}")
-                                fail_count += 1
-                            else:
-                                success_count += 1
-                        status_text.empty()
-                        if fail_count == 0:
-                            st.success(f"✅ บันทึกประวัติครบ {success_count} Sheet ค่ะ")
-                            _sal_status = st.empty()
-                            _sal_status.info("📊 กำลังอัปเดตสรุปเงินเดือน...")
-                            _update_salary_summary(ss, auto_month, auto_year, status_text=_sal_status)
-                        else:
-                            st.warning(f"⚠️ เสร็จ {success_count} / ล้มเหลว {fail_count} Sheet")
-                        if errors:
-                            with st.expander("❌ รายการที่มีปัญหา"):
-                                for err in errors:
-                                    st.text(err)
-                        return
-
-                    # ── Sync Template จาก Block N → ก่อน Freeze ───────────────────
-                    try:
-                        _all_ws2 = _sheets_retry(ss.worksheets)
-                        _ws2_map = {w.title: w for w in _all_ws2}
-                        _fz2_pairs = [(sh, sh) for _, sh in pairs if sh in _ws2_map]
-
-                        # คัดลอกข้อมูล Block N → Template (col N–Y) ก่อน freeze
-                        _sync_template_from_latest_block(
-                            ss, _ws2_map, pairs, status_text=status_text
-                        )
-
-                        # Freeze ประวัติเก่า → ค่านิ่ง (segment-based, รูปปลอดภัย)
-                        _freeze_formulas_to_values(ss, _fz2_pairs, col_start=26, num_rows=100)
-                    except Exception:
-                        pass   # freeze ไม่ได้ก็ข้าม ไม่หยุดการคิดเงินเดือน
-
-                    for idx, (emp_id, sh_pay) in enumerate(pairs):
-                        label = "ประมวลผล"
-                        status_text.info(
-                            f"⏳ กำลัง{label} Sheet **{sh_pay}** ({idx+1}/{len(pairs)})..."
-                        )
-                        try:
-                            if False:   # placeholder — history ถูกจัดการข้างบนแล้ว
-                                pass
-                            else:
-                                emp_rows = att_df[att_df["รหัสพนักงาน"] == emp_id].to_dict("records")
-
-                                r1 = _clear_attendance(ss, sh_pay)
-                                if not r1["ok"]:
-                                    errors.append(f"{sh_pay}: ล้างไม่ได้ — {r1['msg']}")
-                                    fail_count += 1
-                                    progress_bar.progress((idx + 1) / len(pairs))
-                                    continue
-
-                                # เปิด ws + headers ครั้งเดียว แล้วส่งต่อให้ทั้ง 2 ฟังก์ชัน (ลด API call)
-                                try:
-                                    shared_ws      = _sheets_retry(ss.worksheet, sh_pay)
-                                    shared_headers = _sheets_retry(shared_ws.row_values, CFG["HEADER_ROW"])
-                                except Exception as e_ws:
-                                    errors.append(f"{sh_pay}: เปิด worksheet ไม่ได้ — {e_ws}")
-                                    fail_count += 1
-                                    progress_bar.progress((idx + 1) / len(pairs))
-                                    continue
-
-                                r2 = _generate_dates(ss, sh_pay, auto_month, auto_year,
-                                                     ws=shared_ws, headers=shared_headers)
-                                if not r2["ok"]:
-                                    errors.append(f"{sh_pay}: สร้างวันที่ไม่ได้ — {r2['msg']}")
-                                    fail_count += 1
-                                    progress_bar.progress((idx + 1) / len(pairs))
-                                    continue
-
-                                r3 = _import_attendance(ss, sh_pay, emp_rows,
-                                                        ws=shared_ws, headers=shared_headers)
-                                if not r3["ok"]:
-                                    errors.append(f"{sh_pay}: วางเวลาไม่ได้ — {r3['msg']}")
-                                    fail_count += 1
-                                    progress_bar.progress((idx + 1) / len(pairs))
-                                    continue
-
-                                success_count += 1
-
-                        except Exception as e:
-                            errors.append(f"{sh_pay}: ข้อผิดพลาด — {str(e)}")
+                if do_history:
+                    # ── FAST BATCH MODE สำหรับ history ──────────────────
+                    month_yr    = f"{auto_month}/{auto_year}"
+                    sheet_names = [sh_pay for _, sh_pay in pairs]
+                    batch_results = _export_history_batch(
+                        ss, sheet_names, month_yr, ss_db,
+                        status_text=status_text,
+                        progress_bar=progress_bar,
+                    )
+                    for idx2, r in enumerate(batch_results):
+                        progress_bar.progress((idx2 + 1) / len(pairs))
+                        if not r["ok"]:
+                            errors.append(f"{r['sheet']}: บันทึกประวัติไม่ได้ — {r['msg']}")
                             fail_count += 1
-
-                        progress_bar.progress((idx + 1) / len(pairs))
-                        if idx < len(pairs) - 1:
-                            # cooldown ทุก 10 sheet เพื่อไม่ให้ 429
-                            if (idx + 1) % 10 == 0:
-                                status_text.info(
-                                    f"⏸ พัก 30 วินาที (cooldown หลังครบ {idx+1} Sheet)..."
-                                )
-                                time.sleep(30)
-                            else:
-                                time.sleep(6)
-
+                        else:
+                            success_count += 1
                     status_text.empty()
                     if fail_count == 0:
-                        st.success(f"✅ เสร็จสิ้น! ประมวลผลครบ {success_count} Sheet ค่ะ")
+                        st.success(f"✅ บันทึกประวัติครบ {success_count} Sheet ค่ะ")
+                        _sal_status = st.empty()
+                        _sal_status.info("📊 กำลังอัปเดตสรุปเงินเดือน...")
+                        _update_salary_summary(ss, auto_month, auto_year, status_text=_sal_status)
                     else:
-                        st.warning(f"⚠️ เสร็จ {success_count} Sheet / ล้มเหลว {fail_count} Sheet")
+                        st.warning(f"⚠️ เสร็จ {success_count} / ล้มเหลว {fail_count} Sheet")
                     if errors:
                         with st.expander("❌ รายการที่มีปัญหา"):
                             for err in errors:
                                 st.text(err)
+                    return
 
-                use_fast = st.toggle(
-                    "⚡ Fast Mode (batch API — ทุก Sheet พร้อมกัน ~2 นาที แทน ~45 นาที)",
-                    value=True, key="toggle_fast"
-                )
+                # ── Sync Template จาก Block N → ก่อน Freeze ───────────────────
+                try:
+                    _all_ws2 = _sheets_retry(ss.worksheets)
+                    _ws2_map = {w.title: w for w in _all_ws2}
+                    _fz2_pairs = [(sh, sh) for _, sh in pairs if sh in _ws2_map]
 
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("▶ เริ่มคิดเงินเดือน (ล้างเก่า → สร้างวันที่ → วางเวลา)",
-                                 type="primary", key="btn_payroll", use_container_width=True):
-                        if use_fast:
-                            # โหลดวันหยุดตามประเพณีก่อนส่งให้ fast mode
-                            _hmap = {}
-                            try:
-                                _hws  = ss.worksheet("วันหยุดประเพณี")
-                                _hrows = _hws.get_all_records()
-                                for _hr in _hrows:
-                                    _d = int(_hr.get("วันที่", 0) or 0)
-                                    _m = int(_hr.get("เดือน",  0) or 0)
-                                    _y = int(_hr.get("ปี (พ.ศ.)", 0) or 0)
-                                    if _d and _m and _y:
-                                        _dk = f"{str(_d).zfill(2)}/{str(_m).zfill(2)}/{_y}"
-                                        _hmap[_dk] = True
-                            except Exception:
-                                pass
-                            _run_sheets_fast(matched_pairs, att_df,
-                                             auto_month, auto_year, ss,
-                                             holidays_map=_hmap)
-                            # ── ล้างวันหยุดออกจาก sheet อัตโนมัติหลังรันสำเร็จ ──
-                            try:
-                                _hws2 = ss.worksheet("วันหยุดประเพณี")
-                                _hws2.clear()
-                                _hws2.append_row(["ปี (พ.ศ.)", "เดือน", "วันที่"])
-                                _hws2.freeze(rows=1)
-                                # ล้าง cache ด้วย
-                                st.session_state.pop("_hol_data", None)
-                                st.session_state.pop("_hol_ws",   None)
-                            except Exception:
-                                pass
-                        else:
-                            _run_sheets(matched_pairs, att_df, do_history=False)
-
-                with col2:
-                    hist_label = "📚 บันทึกประวัติ (เทมเพลต" + (" + DB" if ss_db else "") + ")"
-                    if st.button(hist_label, key="btn_history", use_container_width=True):
-                        _run_sheets(matched_pairs, att_df, do_history=True)
-
-            else:
-                st.warning("⚠️ อ่านไฟล์ไม่ได้ หรือไม่พบข้อมูล")
-
-        # ── ย้าย/สรุป sheet เงินเดือน (แสดงเสมอ ไม่ต้องอัปโหลดไฟล์) ────
-        st.divider()
-
-        import datetime as _dt_hist
-        _now_hist = _dt_hist.date.today()
-        _hist_month = _now_hist.month
-        _hist_year  = _now_hist.year + 543
-        _hist_label = "📚 ย้าย/สรุป sheet เงินเดือน" + (" (+ DB)" if ss_db else "")
-        if st.button(_hist_label, key="btn_history_standalone",
-                     use_container_width=True):
-                _hist_pairs_sa = [
-                    sh for sh in visible_sheets if re.match(r"^\d+_", sh)
-                ]
-                if _hist_pairs_sa:
-                    _hist_month_yr = f"{int(_hist_month)}/{int(_hist_year)}"
-                    _hist_st = st.empty()
-                    _hist_st.info(f"📚 กำลังย้าย/สรุป {_hist_month_yr} — {len(_hist_pairs_sa)} Sheet...")
-                    _hist_res = _export_history_batch(
-                        ss, _hist_pairs_sa, _hist_month_yr, ss_db,
-                        status_text=_hist_st,
+                    # คัดลอกข้อมูล Block N → Template (col N–Y) ก่อน freeze
+                    _sync_template_from_latest_block(
+                        ss, _ws2_map, pairs, status_text=status_text
                     )
-                    _hist_ok  = sum(1 for r in _hist_res if r.get("ok"))
-                    _hist_fail = [r for r in _hist_res if not r.get("ok")]
-                    if _hist_fail:
-                        _hist_st.warning(
-                            f"⚠️ สำเร็จ {_hist_ok} Sheet, ล้มเหลว {len(_hist_fail)} Sheet:\n" +
-                            "\n".join(f"• {r['sheet']}: {r['msg']}" for r in _hist_fail)
-                        )
-                    else:
-                        _hist_st.success(f"✅ ย้าย/สรุปครบ {_hist_ok} Sheet ค่ะ")
-                        _sal_st2 = st.empty()
-                        _sal_st2.info("📊 กำลังอัปเดตสรุปเงินเดือน...")
-                        _update_salary_summary(ss, int(_hist_month), int(_hist_year),
-                                               status_text=_sal_st2)
+
+                    # Freeze ประวัติเก่า → ค่านิ่ง (segment-based, รูปปลอดภัย)
+                    _freeze_formulas_to_values(ss, _fz2_pairs, col_start=26, num_rows=100)
+                except Exception:
+                    pass   # freeze ไม่ได้ก็ข้าม ไม่หยุดการคิดเงินเดือน
+
+                for idx, (emp_id, sh_pay) in enumerate(pairs):
+                    label = "ประมวลผล"
+                    status_text.info(
+                        f"⏳ กำลัง{label} Sheet **{sh_pay}** ({idx+1}/{len(pairs)})..."
+                    )
+                    try:
+                        if False:   # placeholder — history ถูกจัดการข้างบนแล้ว
+                            pass
+                        else:
+                            emp_rows = att_df[att_df["รหัสพนักงาน"] == emp_id].to_dict("records")
+
+                            r1 = _clear_attendance(ss, sh_pay)
+                            if not r1["ok"]:
+                                errors.append(f"{sh_pay}: ล้างไม่ได้ — {r1['msg']}")
+                                fail_count += 1
+                                progress_bar.progress((idx + 1) / len(pairs))
+                                continue
+
+                            # เปิด ws + headers ครั้งเดียว แล้วส่งต่อให้ทั้ง 2 ฟังก์ชัน (ลด API call)
+                            try:
+                                shared_ws      = _sheets_retry(ss.worksheet, sh_pay)
+                                shared_headers = _sheets_retry(shared_ws.row_values, CFG["HEADER_ROW"])
+                            except Exception as e_ws:
+                                errors.append(f"{sh_pay}: เปิด worksheet ไม่ได้ — {e_ws}")
+                                fail_count += 1
+                                progress_bar.progress((idx + 1) / len(pairs))
+                                continue
+
+                            r2 = _generate_dates(ss, sh_pay, auto_month, auto_year,
+                                                 ws=shared_ws, headers=shared_headers)
+                            if not r2["ok"]:
+                                errors.append(f"{sh_pay}: สร้างวันที่ไม่ได้ — {r2['msg']}")
+                                fail_count += 1
+                                progress_bar.progress((idx + 1) / len(pairs))
+                                continue
+
+                            r3 = _import_attendance(ss, sh_pay, emp_rows,
+                                                    ws=shared_ws, headers=shared_headers)
+                            if not r3["ok"]:
+                                errors.append(f"{sh_pay}: วางเวลาไม่ได้ — {r3['msg']}")
+                                fail_count += 1
+                                progress_bar.progress((idx + 1) / len(pairs))
+                                continue
+
+                            success_count += 1
+
+                    except Exception as e:
+                        errors.append(f"{sh_pay}: ข้อผิดพลาด — {str(e)}")
+                        fail_count += 1
+
+                    progress_bar.progress((idx + 1) / len(pairs))
+                    if idx < len(pairs) - 1:
+                        # cooldown ทุก 10 sheet เพื่อไม่ให้ 429
+                        if (idx + 1) % 10 == 0:
+                            status_text.info(
+                                f"⏸ พัก 30 วินาที (cooldown หลังครบ {idx+1} Sheet)..."
+                            )
+                            time.sleep(30)
+                        else:
+                            time.sleep(6)
+
+                status_text.empty()
+                if fail_count == 0:
+                    st.success(f"✅ เสร็จสิ้น! ประมวลผลครบ {success_count} Sheet ค่ะ")
                 else:
-                    st.warning("⚠️ ไม่พบ Sheet พนักงาน")
+                    st.warning(f"⚠️ เสร็จ {success_count} Sheet / ล้มเหลว {fail_count} Sheet")
+                if errors:
+                    with st.expander("❌ รายการที่มีปัญหา"):
+                        for err in errors:
+                            st.text(err)
 
-        # ── Sync Template จาก Block ล่าสุด (ก่อน Freeze) ────────────
-        st.divider()
-        st.markdown("**เตรียมไฟล์เงินเดือนใหม่**")
-        st.caption("🔄 Sync Template — คัดลอกข้อมูล Block ล่าสุด → ตารางเทมเพลต (col N–Y) ทุก Sheet พนักงาน")
-        _emp_all_pairs = [
-            (sh.split("_")[0], sh)
-            for sh in visible_sheets
-            if re.match(r"^\d+_", sh)
-        ]
-        if st.button("🔄 Sync Template จาก Block ล่าสุด",
-                     key="btn_sync_template", use_container_width=True):
-            _st_sync = st.empty()
-            _all_ws_sync = _sheets_retry(ss.worksheets)
-            _ws_map_sync = {w.title: w for w in _all_ws_sync}
-            _sync_template_from_latest_block(ss, _ws_map_sync, _emp_all_pairs,
-                                             status_text=_st_sync)
-            if _st_sync:
-                _st_sync.success("✅ Sync Template เรียบร้อยค่ะ")
+            use_fast = st.toggle(
+                "⚡ Fast Mode (batch API — ทุก Sheet พร้อมกัน ~2 นาที แทน ~45 นาที)",
+                value=True, key="toggle_fast"
+            )
 
-        # ── Freeze ประวัติ (แสดงเสมอ ไม่ต้องอัปโหลดไฟล์ก่อน) ──────────
-        st.divider()
-        st.caption("🔒 Freeze ประวัติ — แปลงสูตรในคอลัมน์ประวัติ (Z เป็นต้นไป) ให้เป็นค่านิ่ง กดได้ทุกเวลา ไม่ต้องรันเงินเดือนใหม่")
-        # freeze เฉพาะชีทพนักงาน (ชื่อขึ้นต้นด้วยตัวเลขตามด้วย _) เช่น "99001_สมชาย"
-        _fz_all_pairs = [
-            (sh, sh) for sh in visible_sheets
-            if re.match(r"^\d+_", sh)
-        ]
-        if st.button("🔒 Freeze ประวัติ → ค่านิ่ง (กดได้ทุกเวลา)",
-                     key="btn_freeze_only", use_container_width=True):
-            _freeze_history_standalone(_fz_all_pairs, ss)
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("▶ เริ่มคิดเงินเดือน (ล้างเก่า → สร้างวันที่ → วางเวลา)",
+                             type="primary", key="btn_payroll", use_container_width=True):
+                    if use_fast:
+                        # โหลดวันหยุดตามประเพณีก่อนส่งให้ fast mode
+                        _hmap = {}
+                        try:
+                            _hws  = ss.worksheet("วันหยุดประเพณี")
+                            _hrows = _hws.get_all_records()
+                            for _hr in _hrows:
+                                _d = int(_hr.get("วันที่", 0) or 0)
+                                _m = int(_hr.get("เดือน",  0) or 0)
+                                _y = int(_hr.get("ปี (พ.ศ.)", 0) or 0)
+                                if _d and _m and _y:
+                                    _dk = f"{str(_d).zfill(2)}/{str(_m).zfill(2)}/{_y}"
+                                    _hmap[_dk] = True
+                        except Exception:
+                            pass
+                        _run_sheets_fast(matched_pairs, att_df,
+                                         auto_month, auto_year, ss,
+                                         holidays_map=_hmap)
+                        # ── ล้างวันหยุดออกจาก sheet อัตโนมัติหลังรันสำเร็จ ──
+                        try:
+                            _hws2 = ss.worksheet("วันหยุดประเพณี")
+                            _hws2.clear()
+                            _hws2.append_row(["ปี (พ.ศ.)", "เดือน", "วันที่"])
+                            _hws2.freeze(rows=1)
+                            # ล้าง cache ด้วย
+                            st.session_state.pop("_hol_data", None)
+                            st.session_state.pop("_hol_ws",   None)
+                        except Exception:
+                            pass
+                    else:
+                        _run_sheets(matched_pairs, att_df, do_history=False)
 
-        # ── สรุป Salary ใหม่ (ไม่ต้องอัปโหลดไฟล์) ──────────────────
-        st.divider()
-        with st.expander("📊 สรุป Salary ใหม่", expanded=False):
-            st.caption("ใช้เมื่อข้อมูลในชีต Salary หายหรือถูกลบ ไม่ต้องรันเงินเดือนใหม่")
+            with col2:
+                hist_label = "📚 บันทึกประวัติ (เทมเพลต" + (" + DB" if ss_db else "") + ")"
+                if st.button(hist_label, key="btn_history", use_container_width=True):
+                    _run_sheets(matched_pairs, att_df, do_history=True)
 
-            import datetime as _dt2
-            _now2   = _dt2.date.today()
-            _def_m2 = _now2.month
-            _def_y2 = _now2.year + 543
+        else:
+            st.warning("⚠️ อ่านไฟล์ไม่ได้ หรือไม่พบข้อมูล")
 
-            sal_col1, sal_col2, sal_col3 = st.columns([2, 2, 3])
-            with sal_col1:
-                sal_month = st.number_input("เดือน", min_value=1, max_value=12,
-                                            value=_def_m2, step=1, key="sal_month")
-            with sal_col2:
-                sal_year = st.number_input("ปี (พ.ศ.)", min_value=2560, max_value=2599,
-                                           value=_def_y2, step=1, key="sal_year")
-            with sal_col3:
-                st.write("")
-                st.write("")
-                if st.button("📊 สรุป Salary ใหม่", key="btn_rebuild_salary",
-                             use_container_width=True):
-                    _sal_st = st.empty()
-                    _update_salary_summary(ss, int(sal_month), int(sal_year),
-                                           status_text=_sal_st)
+    # ── ย้าย/สรุป sheet เงินเดือน (แสดงเสมอ ไม่ต้องอัปโหลดไฟล์) ────
+    st.divider()
+
+    import datetime as _dt_hist
+    _now_hist = _dt_hist.date.today()
+    _hist_month = _now_hist.month
+    _hist_year  = _now_hist.year + 543
+    _hist_label = "📚 ย้าย/สรุป sheet เงินเดือน" + (" (+ DB)" if ss_db else "")
+    if st.button(_hist_label, key="btn_history_standalone",
+                 use_container_width=True):
+            _hist_pairs_sa = [
+                sh for sh in visible_sheets if re.match(r"^\d+_", sh)
+            ]
+            if _hist_pairs_sa:
+                _hist_month_yr = f"{int(_hist_month)}/{int(_hist_year)}"
+                _hist_st = st.empty()
+                _hist_st.info(f"📚 กำลังย้าย/สรุป {_hist_month_yr} — {len(_hist_pairs_sa)} Sheet...")
+                _hist_res = _export_history_batch(
+                    ss, _hist_pairs_sa, _hist_month_yr, ss_db,
+                    status_text=_hist_st,
+                )
+                _hist_ok  = sum(1 for r in _hist_res if r.get("ok"))
+                _hist_fail = [r for r in _hist_res if not r.get("ok")]
+                if _hist_fail:
+                    _hist_st.warning(
+                        f"⚠️ สำเร็จ {_hist_ok} Sheet, ล้มเหลว {len(_hist_fail)} Sheet:\n" +
+                        "\n".join(f"• {r['sheet']}: {r['msg']}" for r in _hist_fail)
+                    )
+                else:
+                    _hist_st.success(f"✅ ย้าย/สรุปครบ {_hist_ok} Sheet ค่ะ")
+                    _sal_st2 = st.empty()
+                    _sal_st2.info("📊 กำลังอัปเดตสรุปเงินเดือน...")
+                    _update_salary_summary(ss, int(_hist_month), int(_hist_year),
+                                           status_text=_sal_st2)
+            else:
+                st.warning("⚠️ ไม่พบ Sheet พนักงาน")
+
+    # ── Sync Template จาก Block ล่าสุด (ก่อน Freeze) ────────────
+    st.divider()
+    st.markdown("**เตรียมไฟล์เงินเดือนใหม่**")
+    st.caption("🔄 Sync Template — คัดลอกข้อมูล Block ล่าสุด → ตารางเทมเพลต (col N–Y) ทุก Sheet พนักงาน")
+    _emp_all_pairs = [
+        (sh.split("_")[0], sh)
+        for sh in visible_sheets
+        if re.match(r"^\d+_", sh)
+    ]
+    if st.button("🔄 Sync Template จาก Block ล่าสุด",
+                 key="btn_sync_template", use_container_width=True):
+        _st_sync = st.empty()
+        _all_ws_sync = _sheets_retry(ss.worksheets)
+        _ws_map_sync = {w.title: w for w in _all_ws_sync}
+        _sync_template_from_latest_block(ss, _ws_map_sync, _emp_all_pairs,
+                                         status_text=_st_sync)
+        if _st_sync:
+            _st_sync.success("✅ Sync Template เรียบร้อยค่ะ")
+
+    # ── Freeze ประวัติ (แสดงเสมอ ไม่ต้องอัปโหลดไฟล์ก่อน) ──────────
+    st.divider()
+    st.caption("🔒 Freeze ประวัติ — แปลงสูตรในคอลัมน์ประวัติ (Z เป็นต้นไป) ให้เป็นค่านิ่ง กดได้ทุกเวลา ไม่ต้องรันเงินเดือนใหม่")
+    # freeze เฉพาะชีทพนักงาน (ชื่อขึ้นต้นด้วยตัวเลขตามด้วย _) เช่น "99001_สมชาย"
+    _fz_all_pairs = [
+        (sh, sh) for sh in visible_sheets
+        if re.match(r"^\d+_", sh)
+    ]
+    if st.button("🔒 Freeze ประวัติ → ค่านิ่ง (กดได้ทุกเวลา)",
+                 key="btn_freeze_only", use_container_width=True):
+        _freeze_history_standalone(_fz_all_pairs, ss)
+
+    # ── สรุป Salary ใหม่ (ไม่ต้องอัปโหลดไฟล์) ──────────────────
+    st.divider()
+    with st.expander("📊 สรุป Salary ใหม่", expanded=False):
+        st.caption("ใช้เมื่อข้อมูลในชีต Salary หายหรือถูกลบ ไม่ต้องรันเงินเดือนใหม่")
+
+        import datetime as _dt2
+        _now2   = _dt2.date.today()
+        _def_m2 = _now2.month
+        _def_y2 = _now2.year + 543
+
+        sal_col1, sal_col2, sal_col3 = st.columns([2, 2, 3])
+        with sal_col1:
+            sal_month = st.number_input("เดือน", min_value=1, max_value=12,
+                                        value=_def_m2, step=1, key="sal_month")
+        with sal_col2:
+            sal_year = st.number_input("ปี (พ.ศ.)", min_value=2560, max_value=2599,
+                                       value=_def_y2, step=1, key="sal_year")
+        with sal_col3:
+            st.write("")
+            st.write("")
+            if st.button("📊 สรุป Salary ใหม่", key="btn_rebuild_salary",
+                         use_container_width=True):
+                _sal_st = st.empty()
+                _update_salary_summary(ss, int(sal_month), int(sal_year),
+                                       status_text=_sal_st)
 
     # ══════════════════════════════════════════════════════════════
     # วันหยุดตามประเพณี — บันทึกวันหยุดพิเศษประจำเดือน
