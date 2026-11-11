@@ -639,11 +639,12 @@ def render_payroll_page(gc: gspread.Client,
     # ══════════════════════════════════════════════════════════════
     # คิดเงินเดือนพนักงาน — Import เวลาเข้า-ออกงาน
     # ══════════════════════════════════════════════════════════════
-    with st.expander("🧾  คิดเงินเดือนพนักงาน (Import เวลาเข้า-ออกงาน)", expanded=True):
+    with st.expander("🧾  สร้าง Sheet เงินเดือนใหม่", expanded=True):
         st.caption("อัปโหลดไฟล์เวลา → ล้างเก่า → สร้างวันที่ → วางเวลา → บันทึกประวัติ (ประมวลผลทุก Sheet พนักงานอัตโนมัติ)")
 
         att_file = st.file_uploader("📂 ไฟล์เวลาเข้า-ออกงาน (.xlsx / .xls)",
                                     type=["xlsx", "xls"], key="att_file")
+        st.caption("คิดเงินเดือนพนักงาน (Import เวลาเข้า-ออกงาน)")
 
         if att_file:
             att_df = _read_attendance_file(att_file)
@@ -884,6 +885,7 @@ def render_payroll_page(gc: gspread.Client,
 
         # ── Sync Template จาก Block ล่าสุด (ก่อน Freeze) ────────────
         st.divider()
+        st.subheader("เตรียมไฟล์เงินเดือนใหม่")
         st.caption("🔄 Sync Template — คัดลอกข้อมูล Block ล่าสุด → ตารางเทมเพลต (col N–Y) ทุก Sheet พนักงาน")
         _emp_all_pairs = [
             (sh.split("_")[0], sh)
