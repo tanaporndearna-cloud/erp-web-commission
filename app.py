@@ -193,7 +193,7 @@ with _col_right:
     st.caption("กรณีไม่มีไฟล์ Upload จะใส่ H เฉพาะวันอาทิตย์")
 
     inout_file = st.file_uploader(
-        "ไฟล์ InOutDailyReport.xlsx (ไม่บังคับ)",
+        "ไฟล์ InOutDailyReport.xlsx",
         type=["xlsx"],
         key="inout_file",
         help="ถ้าไม่อัปโหลด ระบบจะใส่ H เฉพาะวันอาทิตย์เท่านั้น"
