@@ -161,8 +161,6 @@ st.subheader("📊 Commission SL")
 # แสดงสถานะไฟล์ด้านบน (ไม่ให้ทำให้คอลัมน์สูงไม่เท่ากัน)
 if "last_output_name" in st.session_state:
     st.info(f"📁 ไฟล์พร้อม: **{st.session_state['last_output_name']}**")
-else:
-    st.warning("⚠️ ยังไม่มีไฟล์ — คิดค่าคอมก่อน หรืออัปโหลดในช่องซ้ายด้านล่าง")
 
 _col_left, _col_right = st.columns(2)
 
